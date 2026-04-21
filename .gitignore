@@ -1,0 +1,19 @@
+﻿# Visual Studio / VS Code
+.vs/
+.vscode/
+
+# Build outputs
+**/build/
+**/out/
+**/Debug/
+**/Release/
+**/x64/
+**/obj/
+
+# Python cache
+**/__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
+Thumbs.db

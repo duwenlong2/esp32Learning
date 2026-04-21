@@ -1,0 +1,8 @@
+<Solution>
+  <Configurations>
+    <Platform Name="ARM64" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="BleGestureClient/BleGestureClient.vcxproj" Id="eb6f8270-019e-4d90-86b4-80c7623bd6f7" />
+</Solution>

@@ -1,0 +1,10 @@
+﻿# Build outputs
+**/build/
+**/out/
+**/Debug/
+**/Release/
+**/.vs/
+
+# Arduino / temp files
+*.tmp
+*.log
