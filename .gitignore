@@ -1,6 +1,10 @@
 ﻿# Visual Studio / VS Code
 .vs/
 .vscode/
+*.suo
+*.user
+*.VC.db
+*.VC.opendb
 
 # Build outputs
 **/build/
@@ -9,11 +13,38 @@
 **/Release/
 **/x64/
 **/obj/
+**/cmake-build-*/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/compile_commands.json
+**/.ninja_*/
+**/*.o
+**/*.obj
+**/*.a
+**/*.lib
+**/*.elf
+**/*.bin
+**/*.map
+**/*.hex
+**/*.pdb
 
 # Python cache
 **/__pycache__/
 *.pyc
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
 
 # OS files
 .DS_Store
 Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# Arduino / PlatformIO
+**/.pio/
+**/.arduinoIDE/
