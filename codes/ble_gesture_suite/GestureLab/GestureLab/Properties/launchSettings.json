@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "GestureLab (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "GestureLab (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

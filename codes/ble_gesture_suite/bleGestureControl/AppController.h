@@ -3,6 +3,7 @@
 #include <Arduino.h>
 
 #include "BleTransport.h"
+#include "ImuSensor.h"
 
 // 蓝灯状态机：把“连接状态”映射成“用户看得见的灯效”。
 // 这里不用 bool connected_ 之类的简单标志，是因为视觉表现有 3 种状态，
@@ -46,9 +47,13 @@ class AppController : public BleTransportCallbacks {
   // 对外发布 BLE 状态字符串。
   // 单独抽出来，是为了以后除了连接/断开，还可以在一个地方扩展更多状态文本规则。
   void publishStatus();
+  // 对外发布当前六轴原始数据。
+  void publishImuSample(const ImuSample& sample);
 
   // BLE 传输层成员：负责广播、服务和特征，不直接承载业务决策。
   BleTransport bleTransport_;
+  // IMU 采集成员：负责 I2C 初始化和寄存器读取。
+  ImuSensor imuSensor_;
 
   // 当前灯效模式是状态机核心。
   BleIndicatorMode bleIndicatorMode_ = BleIndicatorMode::Disconnected;
@@ -56,4 +61,6 @@ class AppController : public BleTransportCallbacks {
   bool blinkOutputOn_ = false;
   // 记录上次翻转闪烁或切换模式的时间点。
   unsigned long lastBlinkToggleMs_ = 0;
+  // 记录上次发送 IMU 数据的时间点。
+  unsigned long lastImuPublishMs_ = 0;
 };

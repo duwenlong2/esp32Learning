@@ -51,6 +51,12 @@ void BleTransport::begin(BleTransportCallbacks* callbacks)
   statusCharacteristic_->addDescriptor(new BLE2902());
   statusCharacteristic_->setValue("BOOTING");
 
+  imuCharacteristic_ = service->createCharacteristic(
+    AppConfig::kImuDataUuid,
+    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+  imuCharacteristic_->addDescriptor(new BLE2902());
+  imuCharacteristic_->setValue("IMU,0,0,0,0,0,0,0,0");
+
   service->start();
 
   // 启动广播后，外部设备才能扫描到这台板子并发起连接。
@@ -74,6 +80,19 @@ void BleTransport::publishStatus(const String& status)
   statusCharacteristic_->setValue(status.c_str());
   if (clientConnected_) {
     statusCharacteristic_->notify();
+  }
+}
+
+// 写入 IMU 特征；连接时会主动推送。
+void BleTransport::publishImuData(const String& payload)
+{
+  if (imuCharacteristic_ == nullptr) {
+    return;
+  }
+
+  imuCharacteristic_->setValue(payload.c_str());
+  if (clientConnected_) {
+    imuCharacteristic_->notify();
   }
 }
 

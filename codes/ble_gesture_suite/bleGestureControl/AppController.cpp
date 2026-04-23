@@ -2,6 +2,8 @@
 
 #include "AppConfig.h"
 
+#include <stdio.h>
+
 namespace {
 
 // 把状态枚举转换成便于串口和 BLE 传输的文本。
@@ -28,6 +30,25 @@ String buildStatusText(BleIndicatorMode mode)
   return text;
 }
 
+// 六轴原始数据使用 CSV 文本，便于串口和上位机直接观察。
+String buildImuText(const ImuSample& sample)
+{
+  char payload[128] = {0};
+  snprintf(
+    payload,
+    sizeof(payload),
+    "IMU,%lu,%d,%d,%d,%d,%d,%d,%d",
+    sample.timestampMs,
+    sample.ax,
+    sample.ay,
+    sample.az,
+    sample.gx,
+    sample.gy,
+    sample.gz,
+    sample.temp);
+  return String(payload);
+}
+
 }  // namespace
 
 // 系统启动入口：初始化引脚、启动 BLE、切到配对态并发布状态。
@@ -38,9 +59,14 @@ void AppController::begin()
   pinMode(AppConfig::kLedPin, OUTPUT);
   writeIndicatorLevel(0);
 
+  if (!imuSensor_.begin()) {
+    Serial.println("IMU init failed, BLE will continue without motion stream");
+  }
+
   // 传入 this，让传输层通过回调把连接事件反向通知回来。
   bleTransport_.begin(this);
   setBleIndicatorMode(BleIndicatorMode::Pairing);
+  lastImuPublishMs_ = millis();
 
   Serial.println("BLE indicator demo start");
   publishStatus();
@@ -51,6 +77,23 @@ void AppController::begin()
 void AppController::tick()
 {
   updateBleIndicator();
+
+  if (!bleTransport_.isClientConnected() || !imuSensor_.isReady()) {
+    return;
+  }
+
+  unsigned long now = millis();
+  if (now - lastImuPublishMs_ < AppConfig::kImuPublishIntervalMs) {
+    return;
+  }
+
+  ImuSample sample;
+  if (!imuSensor_.readSample(&sample)) {
+    return;
+  }
+
+  lastImuPublishMs_ = now;
+  publishImuSample(sample);
 }
 
 // BLE 已连接：切到呼吸灯。
@@ -134,4 +177,10 @@ void AppController::writeIndicatorLevel(uint8_t brightness)
 void AppController::publishStatus()
 {
   bleTransport_.publishStatus(buildStatusText(bleIndicatorMode_));
+}
+
+// 通过 BLE 六轴特征推送一帧原始数据。
+void AppController::publishImuSample(const ImuSample& sample)
+{
+  bleTransport_.publishImuData(buildImuText(sample));
 }

@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GestureLab Pose Viewer</title>
+  <link rel="stylesheet" href="./app.css" />
+</head>
+<body>
+  <main class="layout">
+    <section class="hero card">
+      <p class="eyebrow">GestureLab / WebView2 / Three.js</p>
+      <h1>Pose viewer</h1>
+      <p class="intro">
+        This page is a real HTML app hosted inside WebView2. It renders a Three.js cube, receives pose data
+        from WinUI3, and can send pose messages back to C# for logging.
+      </p>
+    </section>
+
+    <section class="viewer-grid">
+      <article class="card stage-card">
+        <div class="stage-header">
+          <div>
+            <h2>3D Preview</h2>
+            <p class="hint">Incoming pose data rotates the cube in real time.</p>
+          </div>
+          <span id="poseBadge" class="pose-badge">neutral</span>
+        </div>
+        <div id="viewport" class="viewport">
+          <canvas id="sceneCanvas"></canvas>
+        </div>
+      </article>
+
+      <article class="card panel controls-panel">
+        <h2>Pose Controls</h2>
+        <p>Adjust the angles below to preview motion, then send the pose back to the C# host.</p>
+
+        <div class="slider-group">
+          <label for="rollSlider">Roll <span id="rollValue">0</span><span class="unit">deg</span></label>
+          <input id="rollSlider" type="range" min="-90" max="90" value="0" />
+        </div>
+
+        <div class="slider-group">
+          <label for="pitchSlider">Pitch <span id="pitchValue">0</span><span class="unit">deg</span></label>
+          <input id="pitchSlider" type="range" min="-90" max="90" value="0" />
+        </div>
+
+        <div class="slider-group">
+          <label for="yawSlider">Yaw <span id="yawValue">0</span><span class="unit">deg</span></label>
+          <input id="yawSlider" type="range" min="-180" max="180" value="0" />
+        </div>
+
+        <div class="slider-group">
+          <label for="orientationPreset">Orientation Mapping</label>
+          <select id="orientationPreset">
+            <option value="calibrated-v1">Calibrated V1 (recommended)</option>
+            <option value="default">Legacy default</option>
+            <option value="swap-rp">Debug: Swap Roll/Pitch</option>
+            <option value="invert-roll">Debug: Invert Roll</option>
+            <option value="invert-pitch">Debug: Invert Pitch</option>
+            <option value="swap-rp-invert-roll">Debug: Swap + Invert Roll</option>
+            <option value="swap-rp-invert-pitch">Debug: Swap + Invert Pitch</option>
+          </select>
+        </div>
+
+        <div class="slider-group">
+          <label>3D Coordinate Mapping</label>
+          <p class="hint" style="margin: 0 0 6px;">Use this to match the model direction with your hand behavior.</p>
+          <label for="mapPitchSelect">Model Pitch (X rotation)</label>
+          <select id="mapPitchSelect">
+            <option value="pitch">+Pitch</option>
+            <option value="-pitch">-Pitch</option>
+            <option value="roll">+Roll</option>
+            <option value="-roll">-Roll</option>
+            <option value="yaw">+Yaw</option>
+            <option value="-yaw">-Yaw</option>
+          </select>
+
+          <label for="mapYawSelect">Model Yaw (Y rotation)</label>
+          <select id="mapYawSelect">
+            <option value="yaw">+Yaw</option>
+            <option value="-yaw">-Yaw</option>
+            <option value="pitch">+Pitch</option>
+            <option value="-pitch">-Pitch</option>
+            <option value="roll">+Roll</option>
+            <option value="-roll">-Roll</option>
+          </select>
+
+          <label for="mapRollSelect">Model Roll (Z rotation)</label>
+          <select id="mapRollSelect">
+            <option value="roll">+Roll</option>
+            <option value="-roll">-Roll</option>
+            <option value="pitch">+Pitch</option>
+            <option value="-pitch">-Pitch</option>
+            <option value="yaw">+Yaw</option>
+            <option value="-yaw">-Yaw</option>
+          </select>
+        </div>
+
+        <div class="slider-group">
+          <label>Viewport (Camera)</label>
+          <p class="hint" style="margin: 0 0 6px;">Adjust how you look at the model, without changing pose mapping.</p>
+
+          <label for="viewYawSlider">View Yaw <span id="viewYawValue">34</span><span class="unit">deg</span></label>
+          <input id="viewYawSlider" type="range" min="-180" max="180" value="34" />
+
+          <label for="viewPitchSlider">View Pitch <span id="viewPitchValue">22</span><span class="unit">deg</span></label>
+          <input id="viewPitchSlider" type="range" min="-20" max="80" value="22" />
+
+          <label for="viewDistanceSlider">View Distance <span id="viewDistanceValue">5.4</span><span class="unit">m</span></label>
+          <input id="viewDistanceSlider" type="range" min="2.0" max="10.0" step="0.1" value="5.4" />
+        </div>
+
+        <div class="actions">
+          <button id="sendToHostButton" type="button">Send Pose -&gt; C#</button>
+          <button id="resetMappingButton" type="button" class="secondary">Reset Mapping</button>
+          <button id="resetViewportButton" type="button" class="secondary">Reset Viewport</button>
+          <button id="resetPoseButton" type="button" class="secondary">Reset Pose</button>
+          <button id="clearPageLogButton" type="button" class="secondary">Clear Page Log</button>
+        </div>
+
+        <h2>Current Status</h2>
+        <p id="statusText" class="status">Waiting for interaction...</p>
+        <div class="status-box">
+          <span class="status-label">Last message from C#</span>
+          <strong id="hostMessageText">None yet</strong>
+        </div>
+      </article>
+    </section>
+
+    <section class="card panel">
+      <div class="panel-header">
+        <h2>Page Log</h2>
+        <span class="hint">This log is rendered by HTML/JS inside WebView2.</span>
+      </div>
+      <pre id="pageLog" class="log">[page] Ready.</pre>
+    </section>
+  </main>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

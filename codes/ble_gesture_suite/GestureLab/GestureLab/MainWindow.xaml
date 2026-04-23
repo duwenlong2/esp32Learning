@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="GestureLab.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Microsoft.UI.Xaml.Controls"
+    xmlns:local="using:GestureLab"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="GestureLab">
+
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid RowDefinitions="Auto,Auto,*" Padding="16" RowSpacing="12">
+        <TextBlock
+            Text="GestureLab: BLE + 3D Pose Viewer"
+            FontSize="20"
+            FontWeight="SemiBold" />
+
+        <StackPanel Grid.Row="1" Spacing="8">
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBlock Text="BLE" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <Button x:Name="ConnectBleButton" Content="Connect" Click="ConnectBleButton_Click" />
+                <Button x:Name="DisconnectBleButton" Content="Disconnect" Click="DisconnectBleButton_Click" />
+
+                <TextBlock Text="Record" Margin="16,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <Button x:Name="StartRecordButton" Content="Start" Click="StartRecordButton_Click" />
+                <Button x:Name="StopRecordButton" Content="Stop" Click="StopRecordButton_Click" />
+                <TextBox x:Name="MarkerTextBox" Width="180" PlaceholderText="marker note" />
+                <Button x:Name="MarkButton" Content="Mark" Click="MarkButton_Click" />
+
+                <TextBlock Text="View" Margin="16,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <Button x:Name="ClearLogButton" Content="Clear Log" Click="ClearLogButton_Click" />
+                <TextBlock x:Name="BleStatusText" Text="BLE: idle" VerticalAlignment="Center" Margin="12,0,0,0" />
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBlock Text="Mark" Margin="16,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <Button Content="L" Click="MarkLButton_Click" />
+                <Button Content="R" Click="MarkRButton_Click" />
+                <Button Content="F" Click="MarkFButton_Click" />
+                <Button Content="B" Click="MarkBButton_Click" />
+                <Button Content="U" Click="MarkUButton_Click" />
+                <Button Content="D" Click="MarkDButton_Click" />
+            </StackPanel>
+        </StackPanel>
+
+        <Grid Grid.Row="2" ColumnDefinitions="3*,2*" ColumnSpacing="12">
+            <controls:WebView2 x:Name="Browser" />
+
+            <Border Grid.Column="1" BorderBrush="Gray" BorderThickness="1" CornerRadius="8" Padding="8">
+                <ListView
+                    x:Name="LogList"
+                    IsItemClickEnabled="False"
+                    SelectionMode="None"
+                    ScrollViewer.VerticalScrollBarVisibility="Auto"
+                    ScrollViewer.HorizontalScrollBarVisibility="Disabled" />
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

@@ -28,6 +28,8 @@ class BleTransport {
   // 更新状态特征内容，连接时会主动 notify。
   // 这里的职责是“发送”，不负责决定发送什么文本。
   void publishStatus(const String& status);
+  // 更新 IMU 数据特征内容，连接时会主动 notify。
+  void publishImuData(const String& payload);
   // 查询当前是否有 BLE 客户端连接。
   bool isClientConnected() const;
 
@@ -43,6 +45,8 @@ class BleTransport {
   BLEServer* server_ = nullptr;
   // 用于对外暴露状态字符串的特征。
   BLECharacteristic* statusCharacteristic_ = nullptr;
+  // 用于对外暴露六轴数据的特征。
+  BLECharacteristic* imuCharacteristic_ = nullptr;
   // 本地缓存连接状态，避免每次都从底层对象推断。
   bool clientConnected_ = false;
 };
