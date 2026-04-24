@@ -34,6 +34,7 @@
 
                 <TextBlock Text="View" Margin="16,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold" />
                 <Button x:Name="ClearLogButton" Content="Clear Log" Click="ClearLogButton_Click" />
+                <Button x:Name="ManualHotkeyButton" Content="Hotkey Ctrl+Alt+Q" Click="ManualHotkeyButton_Click" />
                 <TextBlock x:Name="BleStatusText" Text="BLE: idle" VerticalAlignment="Center" Margin="12,0,0,0" />
             </StackPanel>
 

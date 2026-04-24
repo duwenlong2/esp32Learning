@@ -6,6 +6,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -13,35 +14,43 @@ namespace GestureLab
 {
     public sealed partial class MainWindow : Window
     {
-    private enum MouthActionState
-    {
-        Idle,
-        Moving,
-        Holding,
-        Cooldown,
-    }
+        private enum MouthActionState
+        {
+            Idle,
+            Moving,
+            Holding,
+            Cooldown,
+        }
 
-                private const string HostName = "appassets.local";
+        private const uint KeyEventFKeyUp = 0x0002;
+        private const ushort VirtualKeyControl = 0x11;
+        private const ushort VirtualKeyMenu = 0x12;
+        private const ushort VirtualKeyQ = 0x51;
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, nuint dwExtraInfo);
+
+        private const string HostName = "appassets.local";
         private bool _webViewInitialized = false;
-                private readonly BleGestureClient _bleClient = new();
+        private readonly BleGestureClient _bleClient = new();
         private readonly GestureDataRecorder _recorder = new();
         private readonly ImuAutoCalibrator _autoCalibrator = new();
-            private readonly Stopwatch _imuClock = Stopwatch.StartNew();
-                private CancellationTokenSource? _bleConnectCts;
+        private readonly Stopwatch _imuClock = Stopwatch.StartNew();
+        private CancellationTokenSource? _bleConnectCts;
         private readonly ObservableCollection<string> _logItems = new();
         private const int MaxLogItems = 500;
-            private double _positionX;
-            private double _positionY;
-            private double _positionZ;
-            private double _velocityX;
-            private double _velocityY;
-            private double _velocityZ;
-            private long _lastImuTicks;
-            private long _lastTelemetryLogTicks;
-            private MouthActionState _mouthActionState = MouthActionState.Idle;
-            private long _mouthHoldStartTicks;
-            private long _mouthCooldownUntilTicks;
-            private bool _mouthTriggerDialogOpen;
+        private double _positionX;
+        private double _positionY;
+        private double _positionZ;
+        private double _velocityX;
+        private double _velocityY;
+        private double _velocityZ;
+        private long _lastImuTicks;
+        private long _lastTelemetryLogTicks;
+        private MouthActionState _mouthActionState = MouthActionState.Idle;
+        private long _mouthHoldStartTicks;
+        private long _mouthCooldownUntilTicks;
+        private bool _mouthTriggerDialogOpen;
 
         public MainWindow()
         {
@@ -62,7 +71,8 @@ namespace GestureLab
 
         private async void Browser_Loaded(object sender, RoutedEventArgs e)
         {
-            if (_webViewInitialized) {
+            if (_webViewInitialized)
+            {
                 return;
             }
             _webViewInitialized = true;
@@ -123,6 +133,11 @@ namespace GestureLab
             await DisconnectBleAsync();
             BleStatusText.Text = "BLE: disconnected";
             AppendLog("BLE disconnected.");
+        }
+
+        private async void ManualHotkeyButton_Click(object sender, RoutedEventArgs e)
+        {
+            await ShowHotkeyToastAsync(0, 0, "手动触发");
         }
 
         private void ClearLogButton_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
@@ -401,10 +416,10 @@ namespace GestureLab
                 Browser.CoreWebView2.PostWebMessageAsString(BuildGestureMessageJson("MOUTH_HOLD", roll, pitch));
             }
 
-            ShowMouthTriggerDialog(roll, pitch);
+            _ = ShowHotkeyToastAsync(roll, pitch, "动作触发");
         }
 
-        private async void ShowMouthTriggerDialog(double roll, double pitch)
+        private async Task ShowHotkeyToastAsync(double roll, double pitch, string source)
         {
             if (_mouthTriggerDialogOpen)
             {
@@ -420,16 +435,31 @@ namespace GestureLab
             _mouthTriggerDialogOpen = true;
             try
             {
+                SendSystemHotkey(VirtualKeyControl, VirtualKeyMenu, VirtualKeyQ);
                 ContentDialog dialog = new()
                 {
                     XamlRoot = root.XamlRoot,
-                    Title = "触发成功",
+                    Title = "热键已发送",
                     Content = string.Create(
                         CultureInfo.InvariantCulture,
-                        $"检测到动作：抬笔到嘴边并停留\nroll={roll:F1}, pitch={pitch:F1}\n\n点击取消后可继续下一次动作。"),
-                    CloseButtonText = "取消",
-                    DefaultButton = ContentDialogButton.Close,
+                        $"{source}: Ctrl+Alt+Q\nroll={roll:F1}, pitch={pitch:F1}"),
                 };
+
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(1200);
+                    EnqueueUi(() =>
+                    {
+                        try
+                        {
+                            dialog.Hide();
+                        }
+                        catch
+                        {
+                            // Ignore if dialog is already closed.
+                        }
+                    });
+                });
 
                 await dialog.ShowAsync();
             }
@@ -441,6 +471,29 @@ namespace GestureLab
             {
                 _mouthTriggerDialogOpen = false;
             }
+        }
+
+        private void SendSystemHotkey(params ushort[] virtualKeys)
+        {
+            if (virtualKeys.Length == 0)
+            {
+                return;
+            }
+
+            for (int index = 0; index < virtualKeys.Length; index++)
+            {
+                keybd_event((byte)virtualKeys[index], 0, 0, 0);
+            }
+
+            Thread.Sleep(20);
+
+            for (int index = 0; index < virtualKeys.Length; index++)
+            {
+                ushort key = virtualKeys[virtualKeys.Length - 1 - index];
+                keybd_event((byte)key, 0, KeyEventFKeyUp, 0);
+            }
+
+            AppendLog("Hotkey sent: Ctrl+Alt+Q");
         }
 
         private void MaybeLogTelemetry(double roll, double pitch, double yaw, bool isReady)
@@ -456,7 +509,7 @@ namespace GestureLab
             AppendLog(
                 string.Create(
                     CultureInfo.InvariantCulture,
-                    $"IMU { (isReady ? "ready" : "learning") } pose({roll:F1},{pitch:F1},{yaw:F1}) pos({_positionX:F2},{_positionY:F2},{_positionZ:F2})"));
+                    $"IMU {(isReady ? "ready" : "learning")} pose({roll:F1},{pitch:F1},{yaw:F1}) pos({_positionX:F2},{_positionY:F2},{_positionZ:F2})"));
         }
 
         private static bool TryBuildPoseFromCalibratedGravity(ImuCalibratedSample calibrated, out double roll, out double pitch, out double yaw)
