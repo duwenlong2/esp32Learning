@@ -1,6 +1,6 @@
 using System;
 
-namespace GestureLab;
+namespace GestureLab.Ble;
 
 public readonly struct ImuRawSample
 {

@@ -7,10 +7,15 @@ namespace GestureLab;
 
 public sealed class GestureDataRecorder : IDisposable
 {
+    private const int FlushEventBatchSize = 50;
+    private static readonly TimeSpan FlushInterval = TimeSpan.FromMilliseconds(500);
+
     private readonly object _sync = new();
     private StreamWriter? _writer;
     private string? _currentFilePath;
     private int _sequence;
+    private int _eventsSinceFlush;
+    private DateTime _lastFlushUtc = DateTime.UtcNow;
 
     public bool IsRecording
     {
@@ -53,6 +58,8 @@ public sealed class GestureDataRecorder : IDisposable
             _writer = new StreamWriter(path, append: false, new UTF8Encoding(false));
             _currentFilePath = path;
             _sequence = 0;
+            _eventsSinceFlush = 0;
+            _lastFlushUtc = DateTime.UtcNow;
 
             _writer.WriteLine("utc_time,seq,event,raw_payload,ax,ay,az,gx,gy,gz,temp,roll,pitch,yaw,note");
             _writer.Flush();
@@ -156,7 +163,19 @@ public sealed class GestureDataRecorder : IDisposable
             Csv(note));
 
         _writer.WriteLine(line);
-        _writer.Flush();
+        _eventsSinceFlush++;
+
+        // IMU events are high-frequency; batch flush to avoid UI hitching from frequent synchronous disk I/O.
+        bool shouldFlush = !string.Equals(eventType, "IMU", StringComparison.OrdinalIgnoreCase)
+            || _eventsSinceFlush >= FlushEventBatchSize
+            || (DateTime.UtcNow - _lastFlushUtc) >= FlushInterval;
+
+        if (shouldFlush)
+        {
+            _writer.Flush();
+            _eventsSinceFlush = 0;
+            _lastFlushUtc = DateTime.UtcNow;
+        }
     }
 
     private static string ToText(int? value)
@@ -187,8 +206,10 @@ public sealed class GestureDataRecorder : IDisposable
 
     private void StopSessionInternal()
     {
+        _writer?.Flush();
         _writer?.Dispose();
         _writer = null;
         _currentFilePath = null;
+        _eventsSinceFlush = 0;
     }
 }

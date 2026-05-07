@@ -23,43 +23,77 @@
         <StackPanel Grid.Row="1" Spacing="8">
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <TextBlock Text="BLE" VerticalAlignment="Center" FontWeight="SemiBold" />
-                <Button x:Name="ConnectBleButton" Content="Connect" Click="ConnectBleButton_Click" />
-                <Button x:Name="DisconnectBleButton" Content="Disconnect" Click="DisconnectBleButton_Click" />
-
-                <TextBlock Text="Record" Margin="16,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold" />
-                <Button x:Name="StartRecordButton" Content="Start" Click="StartRecordButton_Click" />
-                <Button x:Name="StopRecordButton" Content="Stop" Click="StopRecordButton_Click" />
-                <TextBox x:Name="MarkerTextBox" Width="180" PlaceholderText="marker note" />
-                <Button x:Name="MarkButton" Content="Mark" Click="MarkButton_Click" />
-
-                <TextBlock Text="View" Margin="16,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold" />
-                <Button x:Name="ClearLogButton" Content="Clear Log" Click="ClearLogButton_Click" />
-                <Button x:Name="ManualHotkeyButton" Content="Hotkey Ctrl+Alt+Q" Click="ManualHotkeyButton_Click" />
                 <TextBlock x:Name="BleStatusText" Text="BLE: idle" VerticalAlignment="Center" Margin="12,0,0,0" />
-            </StackPanel>
-
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <TextBlock Text="Mark" Margin="16,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold" />
-                <Button Content="L" Click="MarkLButton_Click" />
-                <Button Content="R" Click="MarkRButton_Click" />
-                <Button Content="F" Click="MarkFButton_Click" />
-                <Button Content="B" Click="MarkBButton_Click" />
-                <Button Content="U" Click="MarkUButton_Click" />
-                <Button Content="D" Click="MarkDButton_Click" />
             </StackPanel>
         </StackPanel>
 
         <Grid Grid.Row="2" ColumnDefinitions="3*,2*" ColumnSpacing="12">
             <controls:WebView2 x:Name="Browser" />
 
-            <Border Grid.Column="1" BorderBrush="Gray" BorderThickness="1" CornerRadius="8" Padding="8">
-                <ListView
-                    x:Name="LogList"
-                    IsItemClickEnabled="False"
-                    SelectionMode="None"
-                    ScrollViewer.VerticalScrollBarVisibility="Auto"
-                    ScrollViewer.HorizontalScrollBarVisibility="Disabled" />
-            </Border>
+            <Grid Grid.Column="1" RowDefinitions="Auto,*" RowSpacing="10">
+                <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="8" Padding="10">
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="Mouth 判定调试" FontWeight="SemiBold" FontSize="14" />
+
+                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
+                            <TextBlock Text="State" FontWeight="SemiBold" />
+                            <TextBlock x:Name="MouthStateText" Grid.Column="1" Text="Idle" />
+                        </Grid>
+
+                        <TextBlock x:Name="MouthReasonText" Text="等待数据..." TextWrapping="Wrap" />
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="Pitch" FontWeight="SemiBold" />
+                            <ProgressBar x:Name="PitchProgressBar" Minimum="-90" Maximum="90" Value="0" />
+                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                <TextBlock x:Name="PitchRangeText" Text="范围: |pitch| in [24, 88]" />
+                                <TextBlock x:Name="PitchValueText" Text="0.0°" />
+                            </Grid>
+                        </StackPanel>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="Roll" FontWeight="SemiBold" />
+                            <ProgressBar x:Name="RollProgressBar" Minimum="-90" Maximum="90" Value="0" />
+                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                <TextBlock x:Name="RollRangeText" Text="范围: |roll| &lt;= 86" />
+                                <TextBlock x:Name="RollValueText" Text="0.0°" />
+                            </Grid>
+                        </StackPanel>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="Gyro Magnitude" FontWeight="SemiBold" />
+                            <ProgressBar x:Name="GyroProgressBar" Minimum="0" Maximum="1800" Value="0" />
+                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                <TextBlock x:Name="GyroRangeText" Text="阈值: start>=900, still&lt;=450, break&lt;1400" />
+                                <TextBlock x:Name="GyroValueText" Text="0" />
+                            </Grid>
+                        </StackPanel>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="Holding 进度" FontWeight="SemiBold" />
+                            <ProgressBar x:Name="HoldProgressBar" Minimum="0" Maximum="1" Value="0" />
+                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                <TextBlock x:Name="HoldTargetText" Text="目标: 0.30s" />
+                                <TextBlock x:Name="HoldProgressText" Text="0%" />
+                            </Grid>
+                        </StackPanel>
+
+                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
+                            <TextBlock Text="Cooldown" FontWeight="SemiBold" />
+                            <TextBlock x:Name="CooldownText" Grid.Column="1" Text="0.00s" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="1" BorderBrush="Gray" BorderThickness="1" CornerRadius="8" Padding="8">
+                    <ListView
+                        x:Name="LogList"
+                        IsItemClickEnabled="False"
+                        SelectionMode="None"
+                        ScrollViewer.VerticalScrollBarVisibility="Auto"
+                        ScrollViewer.HorizontalScrollBarVisibility="Disabled" />
+                </Border>
+            </Grid>
         </Grid>
     </Grid>
 </Window>

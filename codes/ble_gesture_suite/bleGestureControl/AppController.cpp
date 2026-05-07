@@ -2,6 +2,7 @@
 
 #include "AppConfig.h"
 
+#include <esp_system.h>
 #include <stdio.h>
 
 namespace {
@@ -23,11 +24,41 @@ const char* bleModeToText(BleIndicatorMode mode)
 
 // 组装状态特征字符串，供 Windows 端读取。
 // 这里保留一个简单前缀，方便上位机在后续把更多字段继续拼接进同一条消息。
-String buildStatusText(BleIndicatorMode mode)
+String buildStatusText(BleIndicatorMode mode, bool imuReady, unsigned long imuReadFailCount)
 {
   String text = "BLE:";
   text += bleModeToText(mode);
+  text += ",IMU:";
+  text += imuReady ? "READY" : "NOT_READY";
+  text += ",IMU_FAIL:";
+  text += String(imuReadFailCount);
   return text;
+}
+
+const char* resetReasonToText(esp_reset_reason_t reason)
+{
+  switch (reason) {
+    case ESP_RST_POWERON:
+      return "POWERON";
+    case ESP_RST_SW:
+      return "SW";
+    case ESP_RST_PANIC:
+      return "PANIC";
+    case ESP_RST_INT_WDT:
+      return "INT_WDT";
+    case ESP_RST_TASK_WDT:
+      return "TASK_WDT";
+    case ESP_RST_WDT:
+      return "WDT";
+    case ESP_RST_DEEPSLEEP:
+      return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:
+      return "BROWNOUT";
+    case ESP_RST_SDIO:
+      return "SDIO";
+    default:
+      return "UNKNOWN";
+  }
 }
 
 // 六轴原始数据使用 CSV 文本，便于串口和上位机直接观察。
@@ -56,6 +87,10 @@ String buildImuText(const ImuSample& sample)
 // BLE 启动后立刻进入 Pairing，是因为设备刚开机时最合理的默认行为就是等待连接。
 void AppController::begin()
 {
+  bootResetReason_ = resetReasonToText(esp_reset_reason());
+  Serial.print("Boot reset reason: ");
+  Serial.println(bootResetReason_);
+
   pinMode(AppConfig::kLedPin, OUTPUT);
   writeIndicatorLevel(0);
 
@@ -89,10 +124,21 @@ void AppController::tick()
 
   ImuSample sample;
   if (!imuSensor_.readSample(&sample)) {
+    imuReadFailCount_++;
+    if (now - lastImuReadFailLogMs_ >= 1000) {
+      lastImuReadFailLogMs_ = now;
+      Serial.print("IMU read failed, count=");
+      Serial.println(imuReadFailCount_);
+      publishStatus();
+    }
     return;
   }
 
   lastImuPublishMs_ = now;
+  if (imuReadFailCount_ != 0) {
+    imuReadFailCount_ = 0;
+    publishStatus();
+  }
   publishImuSample(sample);
 }
 
@@ -176,7 +222,10 @@ void AppController::writeIndicatorLevel(uint8_t brightness)
 // 传输层只负责发送，不关心业务字符串长什么样。
 void AppController::publishStatus()
 {
-  bleTransport_.publishStatus(buildStatusText(bleIndicatorMode_));
+  String status = buildStatusText(bleIndicatorMode_, imuSensor_.isReady(), imuReadFailCount_);
+  status += ",RST:";
+  status += bootResetReason_;
+  bleTransport_.publishStatus(status);
 }
 
 // 通过 BLE 六轴特征推送一帧原始数据。

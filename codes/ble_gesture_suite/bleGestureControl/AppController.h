@@ -63,4 +63,9 @@ class AppController : public BleTransportCallbacks {
   unsigned long lastBlinkToggleMs_ = 0;
   // 记录上次发送 IMU 数据的时间点。
   unsigned long lastImuPublishMs_ = 0;
+  // 连续读取失败计数与节流日志时间，用于快速定位“已连上但无六轴数据”。
+  unsigned long imuReadFailCount_ = 0;
+  unsigned long lastImuReadFailLogMs_ = 0;
+  // 记录本次启动复位原因，便于上位机诊断掉电/看门狗/崩溃重启。
+  String bootResetReason_;
 };

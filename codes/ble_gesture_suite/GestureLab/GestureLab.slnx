@@ -10,4 +10,9 @@
     <Platform Solution="*|x86" Project="x86" />
     <Deploy />
   </Project>
+  <Project Path="GestureLab.Ble/GestureLab.Ble.csproj">
+    <Platform Solution="*|ARM64" Project="Any CPU" />
+    <Platform Solution="*|x64" Project="Any CPU" />
+    <Platform Solution="*|x86" Project="Any CPU" />
+  </Project>
 </Solution>

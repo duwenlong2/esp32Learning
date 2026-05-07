@@ -9,6 +9,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using GestureLab.Ble;
 
 namespace GestureLab
 {
@@ -26,6 +27,17 @@ namespace GestureLab
         private const ushort VirtualKeyControl = 0x11;
         private const ushort VirtualKeyMenu = 0x12;
         private const ushort VirtualKeyQ = 0x51;
+        private const double MoveStartGyroThreshold = 900.0;
+        private const double StillGyroThreshold = 450.0;
+        private const double HoldBreakGyroThreshold = 1400.0;
+        private const double PosePitchAbsMin = 24.0;
+        private const double PosePitchAbsMax = 88.0;
+        private const double PoseRollAbsMax = 86.0;
+        private const double HoldSeconds = 0.30;
+        private const double CooldownSeconds = 1.2;
+        private const double PosePublishIntervalSeconds = 1.0 / 30.0;
+        private const double DebugUiRefreshIntervalSeconds = 1.0 / 20.0;
+        private const double ImuValidationTimeoutSeconds = 5.0;
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, nuint dwExtraInfo);
@@ -34,7 +46,6 @@ namespace GestureLab
         private bool _webViewInitialized = false;
         private readonly BleGestureClient _bleClient = new();
         private readonly GestureDataRecorder _recorder = new();
-        private readonly ImuAutoCalibrator _autoCalibrator = new();
         private readonly Stopwatch _imuClock = Stopwatch.StartNew();
         private CancellationTokenSource? _bleConnectCts;
         private readonly ObservableCollection<string> _logItems = new();
@@ -47,26 +58,44 @@ namespace GestureLab
         private double _velocityZ;
         private long _lastImuTicks;
         private long _lastTelemetryLogTicks;
+        private long _lastPosePublishTicks;
         private MouthActionState _mouthActionState = MouthActionState.Idle;
+        private MouthActionState _lastMouthDebugUiState = MouthActionState.Idle;
         private long _mouthHoldStartTicks;
         private long _mouthCooldownUntilTicks;
+        private long _lastMouthDebugUiTicks;
         private bool _mouthTriggerDialogOpen;
+        private int _imuRawPacketCount;
+        private int _imuParsedPacketCount;
+        private bool _imuReadyLogged;
+        private string _lastImuPayloadPreview = "<none>";
+        private CancellationTokenSource? _imuValidationCts;
 
         public MainWindow()
         {
             InitializeComponent();
             LogList.ItemsSource = _logItems;
             Browser.Loaded += Browser_Loaded;
+            InitializeMouthDebugUi();
 
+            // Caller-side required wiring summary:
+            // 1) Register connection state/log/status/frame events before starting reconnect.
+            // 2) Start auto reconnect once at startup; the host will keep scanning/reconnecting.
             _bleClient.Log += message => EnqueueUi(() => AppendLog($"BLE: {message}"));
+            _bleClient.ConnectionStateChanged += state => EnqueueUi(() => HandleBleConnectionStateChanged(state));
             _bleClient.StatusPayloadReceived += payload => EnqueueUi(() =>
             {
                 AppendLog($"RX status: {payload}");
                 _recorder.LogStatus(payload);
             });
-            _bleClient.ImuPayloadReceived += payload => EnqueueUi(() => HandleImuPayload(payload));
+            _bleClient.ImuPayloadReceived += payload => EnqueueUi(() => HandleRawImuPayload(payload));
+            _bleClient.ImuFrameProcessed += result => EnqueueUi(() => HandleImuFrameProcessed(result));
+            _bleClient.ImuFrameProcessingFailed += (status, payload) => EnqueueUi(() => HandleImuProcessingFailed(status, payload));
 
             AppWindow.Closing += AppWindow_Closing;
+
+            // Auto arm BLE reconnect on app startup so host can recover after ESP32 power cycle.
+            _ = ArmBleAutoReconnectAsync();
         }
 
         private async void Browser_Loaded(object sender, RoutedEventArgs e)
@@ -94,18 +123,17 @@ namespace GestureLab
             AppendLog($"Page -> C#: {message}");
         }
 
-        private async void ConnectBleButton_Click(object sender, RoutedEventArgs e)
+        private async Task ArmBleAutoReconnectAsync()
         {
             try
             {
-                ConnectBleButton.IsEnabled = false;
                 BleStatusText.Text = "BLE: scanning...";
                 _bleConnectCts?.Cancel();
                 _bleConnectCts = new CancellationTokenSource();
 
-                await _bleClient.ConnectAsync(TimeSpan.FromSeconds(35), _bleConnectCts.Token);
-                BleStatusText.Text = "BLE: connected";
-                AppendLog("BLE connection ready.");
+                await _bleClient.StartAutoReconnectLoopAsync(TimeSpan.FromSeconds(35), _bleConnectCts.Token);
+                BleStatusText.Text = "BLE: reconnect armed";
+                AppendLog("BLE auto reconnect armed.");
             }
             catch (OperationCanceledException)
             {
@@ -122,58 +150,8 @@ namespace GestureLab
                 BleStatusText.Text = "BLE: error";
                 AppendLog($"BLE connect failed: {ex.Message}");
             }
-            finally
-            {
-                ConnectBleButton.IsEnabled = true;
-            }
         }
 
-        private async void DisconnectBleButton_Click(object sender, RoutedEventArgs e)
-        {
-            await DisconnectBleAsync();
-            BleStatusText.Text = "BLE: disconnected";
-            AppendLog("BLE disconnected.");
-        }
-
-        private async void ManualHotkeyButton_Click(object sender, RoutedEventArgs e)
-        {
-            await ShowHotkeyToastAsync(0, 0, "手动触发");
-        }
-
-        private void ClearLogButton_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
-        {
-            _logItems.Clear();
-        }
-
-        private void StartRecordButton_Click(object sender, RoutedEventArgs e)
-        {
-            string label = string.IsNullOrWhiteSpace(MarkerTextBox.Text) ? "alignment" : MarkerTextBox.Text;
-            string path = _recorder.StartSession(label);
-            AppendLog($"Record started: {path}");
-        }
-
-        private void StopRecordButton_Click(object sender, RoutedEventArgs e)
-        {
-            string? path = _recorder.CurrentFilePath;
-            _recorder.StopSession();
-            AppendLog(path is null ? "Record already stopped." : $"Record stopped: {path}");
-        }
-
-        private void MarkButton_Click(object sender, RoutedEventArgs e)
-        {
-            string note = string.IsNullOrWhiteSpace(MarkerTextBox.Text)
-                ? $"mark-{DateTime.Now:HHmmss}"
-                : MarkerTextBox.Text.Trim();
-
-            LogMarker(note);
-        }
-
-        private void MarkLButton_Click(object sender, RoutedEventArgs e) => LogMarker("L");
-        private void MarkRButton_Click(object sender, RoutedEventArgs e) => LogMarker("R");
-        private void MarkFButton_Click(object sender, RoutedEventArgs e) => LogMarker("F");
-        private void MarkBButton_Click(object sender, RoutedEventArgs e) => LogMarker("B");
-        private void MarkUButton_Click(object sender, RoutedEventArgs e) => LogMarker("U");
-        private void MarkDButton_Click(object sender, RoutedEventArgs e) => LogMarker("D");
 
         private async void AppWindow_Closing(Microsoft.UI.Windowing.AppWindow sender, Microsoft.UI.Windowing.AppWindowClosingEventArgs args)
         {
@@ -191,13 +169,6 @@ namespace GestureLab
             {
                 _logItems.RemoveAt(0);
             }
-        }
-
-        private void LogMarker(string note)
-        {
-            _recorder.LogMarker(note);
-            MarkerTextBox.Text = note;
-            AppendLog($"Mark: {note}");
         }
 
         private static string BuildPoseMessageJson(double roll, double pitch, double yaw, string label, double tx, double ty, double tz)
@@ -219,7 +190,8 @@ namespace GestureLab
             try
             {
                 _bleConnectCts?.Cancel();
-                await _bleClient.DisconnectAsync();
+                _imuValidationCts?.Cancel();
+                await _bleClient.StopAutoReconnectLoopAsync();
             }
             catch (Exception ex)
             {
@@ -227,20 +199,42 @@ namespace GestureLab
             }
         }
 
-        private void HandleImuPayload(string payload)
+        private void HandleRawImuPayload(string payload)
         {
-            if (!TryParseImuRaw(payload, out ImuRawSample rawSample))
+            _imuRawPacketCount++;
+            _lastImuPayloadPreview = payload.Length <= 120 ? payload : payload[..120] + "...";
+        }
+
+        private void HandleImuProcessingFailed(ImuProcessingStatus status, string payload)
+        {
+            if (status == ImuProcessingStatus.ParseFailed)
             {
                 _recorder.LogImu(payload, null, null, null, null, null, null, null, null, null, null, "parse-failed");
                 return;
             }
 
-            ImuCalibratedSample calibrated = _autoCalibrator.Update(rawSample);
-
-            if (!TryBuildPoseFromCalibratedGravity(calibrated, out double roll, out double pitch, out double yaw))
+            if (status == ImuProcessingStatus.PoseFailed)
             {
-                _recorder.LogImu(payload, rawSample.Ax, rawSample.Ay, rawSample.Az, rawSample.Gx, rawSample.Gy, rawSample.Gz, rawSample.Temp, null, null, null, "pose-failed");
-                return;
+                _recorder.LogImu(payload, null, null, null, null, null, null, null, null, null, null, "pose-failed");
+            }
+        }
+
+        private void HandleImuFrameProcessed(ImuProcessingResult result)
+        {
+            ImuRawSample rawSample = result.Raw;
+            ImuCalibratedSample calibrated = result.Calibrated;
+            double roll = result.Pose.Roll;
+            double pitch = result.Pose.Pitch;
+            double yaw = result.Pose.Yaw;
+            string payload = result.RawPayload;
+
+            _imuParsedPacketCount++;
+            if (!_imuReadyLogged)
+            {
+                _imuReadyLogged = true;
+                AppendLog(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"IMU stream ready: raw={_imuRawPacketCount}, parsed={_imuParsedPacketCount}"));
             }
 
             string note = calibrated.IsReady ? "imu-auto-cal-ready" : "imu-auto-cal-learning";
@@ -254,8 +248,11 @@ namespace GestureLab
                 return;
             }
 
-            string message = BuildPoseMessageJson(roll, pitch, yaw, "imu-live", _positionX, _positionY, _positionZ);
-            Browser.CoreWebView2.PostWebMessageAsString(message);
+            if (ShouldPublishPoseToWeb(nowTicks: _imuClock.ElapsedTicks))
+            {
+                string message = BuildPoseMessageJson(roll, pitch, yaw, "imu-live", _positionX, _positionY, _positionZ);
+                Browser.CoreWebView2.PostWebMessageAsString(message);
+            }
 
             MaybeLogTelemetry(roll, pitch, yaw, calibrated.IsReady);
         }
@@ -326,18 +323,72 @@ namespace GestureLab
             return Math.Abs(value) < threshold ? 0.0 : value;
         }
 
+        private void InitializeMouthDebugUi()
+        {
+            PitchRangeText.Text = string.Create(CultureInfo.InvariantCulture, $"范围: |pitch| in [{PosePitchAbsMin:F0}, {PosePitchAbsMax:F0}]");
+            RollRangeText.Text = string.Create(CultureInfo.InvariantCulture, $"范围: |roll| <= {PoseRollAbsMax:F0}");
+            GyroRangeText.Text = string.Create(
+                CultureInfo.InvariantCulture,
+                $"阈值: start>={MoveStartGyroThreshold:F0}, still<={StillGyroThreshold:F0}, break<{HoldBreakGyroThreshold:F0}");
+            HoldTargetText.Text = string.Create(CultureInfo.InvariantCulture, $"目标: {HoldSeconds:F2}s");
+            MouthStateText.Text = MouthActionState.Idle.ToString();
+            MouthReasonText.Text = "等待抬手动作";
+            HoldProgressBar.Value = 0;
+            HoldProgressText.Text = "0%";
+            CooldownText.Text = "0.00s";
+        }
+
+        private static string BuildPrimaryFailureReason(bool inMouthPose, double roll, double pitch, double gyroMagnitude)
+        {
+            if (Math.Abs(pitch) < PosePitchAbsMin)
+            {
+                return string.Create(CultureInfo.InvariantCulture, $"pitch 偏小: |{pitch:F1}| < {PosePitchAbsMin:F1}");
+            }
+
+            if (Math.Abs(pitch) > PosePitchAbsMax)
+            {
+                return string.Create(CultureInfo.InvariantCulture, $"pitch 偏大: |{pitch:F1}| > {PosePitchAbsMax:F1}");
+            }
+
+            if (Math.Abs(roll) > PoseRollAbsMax)
+            {
+                return string.Create(CultureInfo.InvariantCulture, $"roll 超限: |{roll:F1}| > {PoseRollAbsMax:F1}");
+            }
+
+            if (!inMouthPose)
+            {
+                return "姿态未进入目标窗口";
+            }
+
+            return string.Create(CultureInfo.InvariantCulture, $"等待稳定: gyro={gyroMagnitude:F0}");
+        }
+
+        private void UpdateMouthDebugUi(
+            double roll,
+            double pitch,
+            double gyroMagnitude,
+            string reason,
+            double holdProgress,
+            double cooldownRemainingSeconds)
+        {
+            MouthStateText.Text = _mouthActionState.ToString();
+            MouthReasonText.Text = reason;
+
+            PitchProgressBar.Value = Math.Clamp(pitch, -90, 90);
+            RollProgressBar.Value = Math.Clamp(roll, -90, 90);
+            GyroProgressBar.Value = Math.Clamp(gyroMagnitude, 0, GyroProgressBar.Maximum);
+
+            PitchValueText.Text = string.Create(CultureInfo.InvariantCulture, $"{pitch:F1}°");
+            RollValueText.Text = string.Create(CultureInfo.InvariantCulture, $"{roll:F1}°");
+            GyroValueText.Text = string.Create(CultureInfo.InvariantCulture, $"{gyroMagnitude:F0}");
+
+            HoldProgressBar.Value = Math.Clamp(holdProgress, 0.0, 1.0);
+            HoldProgressText.Text = string.Create(CultureInfo.InvariantCulture, $"{Math.Clamp(holdProgress * 100.0, 0.0, 100.0):F0}%");
+            CooldownText.Text = string.Create(CultureInfo.InvariantCulture, $"{Math.Max(cooldownRemainingSeconds, 0.0):F2}s");
+        }
+
         private void UpdateMouthActionDetector(ImuRawSample raw, ImuCalibratedSample calibrated, double roll, double pitch)
         {
-            // Base version: prioritize smooth triggering over strict filtering.
-            const double moveStartGyroThreshold = 900.0;
-            const double stillGyroThreshold = 450.0;
-            const double holdBreakGyroThreshold = 1400.0;
-            const double posePitchAbsMin = 24.0;
-            const double posePitchAbsMax = 88.0;
-            const double poseRollAbsMax = 86.0;
-            const double holdSeconds = 0.30;
-            const double cooldownSeconds = 1.2;
-
             long nowTicks = _imuClock.ElapsedTicks;
             double nowSeconds = nowTicks / (double)Stopwatch.Frequency;
 
@@ -346,61 +397,122 @@ namespace GestureLab
             double correctedGz = raw.Gz - calibrated.GyroBiasZ;
             double gyroMagnitude = Math.Sqrt((correctedGx * correctedGx) + (correctedGy * correctedGy) + (correctedGz * correctedGz));
 
-            bool inMouthPose = Math.Abs(pitch) >= posePitchAbsMin
-                && Math.Abs(pitch) <= posePitchAbsMax
-                && Math.Abs(roll) <= poseRollAbsMax;
+            bool inMouthPose = Math.Abs(pitch) >= PosePitchAbsMin
+                && Math.Abs(pitch) <= PosePitchAbsMax
+                && Math.Abs(roll) <= PoseRollAbsMax;
+            string reason = BuildPrimaryFailureReason(inMouthPose, roll, pitch, gyroMagnitude);
+            double holdProgress = 0;
+            double cooldownRemainingSeconds = Math.Max(0.0, (_mouthCooldownUntilTicks - nowTicks) / (double)Stopwatch.Frequency);
 
             switch (_mouthActionState)
             {
                 case MouthActionState.Idle:
-                    if (gyroMagnitude >= moveStartGyroThreshold)
+                    if (gyroMagnitude >= MoveStartGyroThreshold)
                     {
                         _mouthActionState = MouthActionState.Moving;
+                        reason = string.Create(CultureInfo.InvariantCulture, $"检测到抬手速度: gyro={gyroMagnitude:F0} >= {MoveStartGyroThreshold:F0}");
+                    }
+                    else
+                    {
+                        reason = string.Create(CultureInfo.InvariantCulture, $"等待抬手: gyro={gyroMagnitude:F0} < {MoveStartGyroThreshold:F0}");
                     }
                     break;
 
                 case MouthActionState.Moving:
-                    if (inMouthPose && gyroMagnitude <= stillGyroThreshold)
+                    if (inMouthPose && gyroMagnitude <= StillGyroThreshold)
                     {
                         _mouthActionState = MouthActionState.Holding;
                         _mouthHoldStartTicks = nowTicks;
+                        reason = "进入 Holding，开始计时";
                     }
-                    else if (gyroMagnitude <= stillGyroThreshold && !inMouthPose)
+                    else if (gyroMagnitude <= StillGyroThreshold && !inMouthPose)
                     {
                         _mouthActionState = MouthActionState.Idle;
+                        reason = BuildPrimaryFailureReason(inMouthPose, roll, pitch, gyroMagnitude);
+                    }
+                    else if (!inMouthPose)
+                    {
+                        reason = BuildPrimaryFailureReason(inMouthPose, roll, pitch, gyroMagnitude);
+                    }
+                    else
+                    {
+                        reason = string.Create(CultureInfo.InvariantCulture, $"姿态已进入，等待更稳定: gyro={gyroMagnitude:F0} > {StillGyroThreshold:F0}");
                     }
                     break;
 
                 case MouthActionState.Holding:
+                    holdProgress = Math.Clamp((nowTicks - _mouthHoldStartTicks) / (double)Stopwatch.Frequency / HoldSeconds, 0.0, 1.0);
                     if (!inMouthPose)
                     {
-                        _mouthActionState = gyroMagnitude >= moveStartGyroThreshold ? MouthActionState.Moving : MouthActionState.Idle;
+                        _mouthActionState = gyroMagnitude >= MoveStartGyroThreshold ? MouthActionState.Moving : MouthActionState.Idle;
+                        reason = BuildPrimaryFailureReason(inMouthPose, roll, pitch, gyroMagnitude);
                         break;
                     }
 
-                    if (gyroMagnitude >= holdBreakGyroThreshold)
+                    if (gyroMagnitude >= HoldBreakGyroThreshold)
                     {
                         _mouthActionState = MouthActionState.Moving;
+                        reason = string.Create(CultureInfo.InvariantCulture, $"Holding 中断: gyro={gyroMagnitude:F0} >= {HoldBreakGyroThreshold:F0}");
                         break;
                     }
 
-                    if (((nowTicks - _mouthHoldStartTicks) / (double)Stopwatch.Frequency) >= holdSeconds
+                    if (((nowTicks - _mouthHoldStartTicks) / (double)Stopwatch.Frequency) >= HoldSeconds
                         && nowTicks >= _mouthCooldownUntilTicks)
                     {
                         TriggerMouthAction(roll, pitch);
-                        _mouthCooldownUntilTicks = nowTicks + (long)(cooldownSeconds * Stopwatch.Frequency);
+                        _mouthCooldownUntilTicks = nowTicks + (long)(CooldownSeconds * Stopwatch.Frequency);
                         _mouthActionState = MouthActionState.Cooldown;
+                        cooldownRemainingSeconds = CooldownSeconds;
+                        reason = "触发成功，进入 Cooldown";
+                    }
+                    else
+                    {
+                        reason = string.Create(CultureInfo.InvariantCulture, $"保持中: {Math.Clamp((nowTicks - _mouthHoldStartTicks) / (double)Stopwatch.Frequency, 0.0, HoldSeconds):F2}/{HoldSeconds:F2}s");
                     }
                     break;
 
                 case MouthActionState.Cooldown:
                     if (nowSeconds >= (_mouthCooldownUntilTicks / (double)Stopwatch.Frequency)
-                        && gyroMagnitude <= stillGyroThreshold)
+                        && gyroMagnitude <= StillGyroThreshold)
                     {
                         _mouthActionState = MouthActionState.Idle;
+                        reason = "Cooldown 结束，可进行下一次动作";
+                        cooldownRemainingSeconds = 0;
+                    }
+                    else
+                    {
+                        reason = string.Create(CultureInfo.InvariantCulture, $"冷却中: {cooldownRemainingSeconds:F2}s");
                     }
                     break;
             }
+
+            bool stateChanged = _mouthActionState != _lastMouthDebugUiState;
+            bool intervalReached = _lastMouthDebugUiTicks == 0
+                || ((nowTicks - _lastMouthDebugUiTicks) / (double)Stopwatch.Frequency) >= DebugUiRefreshIntervalSeconds;
+
+            if (stateChanged || intervalReached)
+            {
+                UpdateMouthDebugUi(roll, pitch, gyroMagnitude, reason, holdProgress, cooldownRemainingSeconds);
+                _lastMouthDebugUiTicks = nowTicks;
+                _lastMouthDebugUiState = _mouthActionState;
+            }
+        }
+
+        private bool ShouldPublishPoseToWeb(long nowTicks)
+        {
+            if (_lastPosePublishTicks == 0)
+            {
+                _lastPosePublishTicks = nowTicks;
+                return true;
+            }
+
+            if (((nowTicks - _lastPosePublishTicks) / (double)Stopwatch.Frequency) < PosePublishIntervalSeconds)
+            {
+                return false;
+            }
+
+            _lastPosePublishTicks = nowTicks;
+            return true;
         }
 
         private void TriggerMouthAction(double roll, double pitch)
@@ -493,7 +605,8 @@ namespace GestureLab
                 keybd_event((byte)key, 0, KeyEventFKeyUp, 0);
             }
 
-            AppendLog("Hotkey sent: Ctrl+Alt+Q");
+            // Explicit completion log for integrators observing SDK/app behavior.
+            AppendLog("Hotkey send completed: Ctrl+Alt+Q");
         }
 
         private void MaybeLogTelemetry(double roll, double pitch, double yaw, bool isReady)
@@ -512,25 +625,6 @@ namespace GestureLab
                     $"IMU {(isReady ? "ready" : "learning")} pose({roll:F1},{pitch:F1},{yaw:F1}) pos({_positionX:F2},{_positionY:F2},{_positionZ:F2})"));
         }
 
-        private static bool TryBuildPoseFromCalibratedGravity(ImuCalibratedSample calibrated, out double roll, out double pitch, out double yaw)
-        {
-            roll = 0;
-            pitch = 0;
-            yaw = 0;
-
-            (double mx, double my, double mz) = MapAccelToViewerAxes(
-                calibrated.GravityX,
-                calibrated.GravityY,
-                calibrated.GravityZ);
-
-            // 先用加速度估计姿态角，作为实时可视化基线。
-            double radToDeg = 180.0 / Math.PI;
-            roll = Math.Atan2(my, mz) * radToDeg;
-            pitch = Math.Atan2(-mx, Math.Sqrt(my * my + mz * mz)) * radToDeg;
-            yaw = 0;
-            return true;
-        }
-
         private static (double x, double y, double z) MapAccelToViewerAxes(double ax, double ay, double az)
         {
             // Pair mapping baseline (from current LR/FB captures):
@@ -540,35 +634,85 @@ namespace GestureLab
             return (-ay, -ax, az);
         }
 
-        private static bool TryParseImuRaw(
-            string payload,
-            out ImuRawSample sample)
-        {
-            sample = default;
-            string[] parts = payload.Split(',');
-            if (parts.Length < 9 || !string.Equals(parts[0], "IMU", StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
-            if (!int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int ax)
-                || !int.TryParse(parts[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out int ay)
-                || !int.TryParse(parts[4], NumberStyles.Integer, CultureInfo.InvariantCulture, out int az)
-                || !int.TryParse(parts[5], NumberStyles.Integer, CultureInfo.InvariantCulture, out int gx)
-                || !int.TryParse(parts[6], NumberStyles.Integer, CultureInfo.InvariantCulture, out int gy)
-                || !int.TryParse(parts[7], NumberStyles.Integer, CultureInfo.InvariantCulture, out int gz)
-                || !int.TryParse(parts[8], NumberStyles.Integer, CultureInfo.InvariantCulture, out int temp))
-            {
-                return false;
-            }
-
-            sample = new ImuRawSample(ax, ay, az, gx, gy, gz, temp);
-            return true;
-        }
-
         private void EnqueueUi(Action action)
         {
             DispatcherQueue.TryEnqueue(() => action());
+        }
+
+        private void HandleBleConnectionStateChanged(BleConnectionLifecycleState state)
+        {
+            switch (state)
+            {
+                case BleConnectionLifecycleState.Scanning:
+                    BleStatusText.Text = "BLE: scanning...";
+                    break;
+
+                case BleConnectionLifecycleState.Connected:
+                    BleStatusText.Text = "BLE: connected";
+                    AppendLog("BLE connection ready.");
+                    StartImuValidation();
+                    break;
+
+                case BleConnectionLifecycleState.Disconnected:
+                default:
+                    BleStatusText.Text = _bleClient.IsAutoReconnectActive ? "BLE: waiting for reconnect" : "BLE: disconnected";
+                    if (_bleClient.IsAutoReconnectActive)
+                    {
+                        AppendLog("BLE disconnected. Waiting for ESP32 advertisement to reconnect.");
+                    }
+                    break;
+            }
+        }
+
+        private void StartImuValidation()
+        {
+            _imuValidationCts?.Cancel();
+            _imuValidationCts = new CancellationTokenSource();
+
+            _imuRawPacketCount = 0;
+            _imuParsedPacketCount = 0;
+            _imuReadyLogged = false;
+            _lastImuPayloadPreview = "<none>";
+
+            _ = ValidateImuStreamAsync(_imuValidationCts.Token);
+        }
+
+        private async Task ValidateImuStreamAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(ImuValidationTimeoutSeconds), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            EnqueueUi(() =>
+            {
+                if (!_bleClient.IsConnected)
+                {
+                    return;
+                }
+
+                if (_imuParsedPacketCount > 0)
+                {
+                    return;
+                }
+
+                if (_imuRawPacketCount == 0)
+                {
+                    AppendLog(string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"IMU validation failed: no IMU payload received in {ImuValidationTimeoutSeconds:F0}s after BLE connected. Check firmware notify/CCCD/UUID and I2C sensor wiring."));
+                    return;
+                }
+
+                AppendLog(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"IMU validation failed: received {_imuRawPacketCount} payload(s) but parse=0 in {ImuValidationTimeoutSeconds:F0}s. Last payload preview: {_lastImuPayloadPreview}"));
+                AppendLog("Expected payload format: IMU,<tick>,<ax>,<ay>,<az>,<gx>,<gy>,<gz>,<temp>");
+            });
         }
 
         private static string EscapeJson(string value)

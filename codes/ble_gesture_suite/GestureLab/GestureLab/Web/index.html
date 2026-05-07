@@ -107,14 +107,58 @@
           <label for="viewPitchSlider">View Pitch <span id="viewPitchValue">22</span><span class="unit">deg</span></label>
           <input id="viewPitchSlider" type="range" min="-20" max="80" value="22" />
 
-          <label for="viewDistanceSlider">View Distance <span id="viewDistanceValue">5.4</span><span class="unit">m</span></label>
-          <input id="viewDistanceSlider" type="range" min="2.0" max="10.0" step="0.1" value="5.4" />
+          <label for="viewDistanceSlider">View Distance <span id="viewDistanceValue">6.2</span><span class="unit">m</span></label>
+          <input id="viewDistanceSlider" type="range" min="2.0" max="10.0" step="0.1" value="6.2" />
+
+          <label for="viewMotionScaleSlider">Motion Scale <span id="viewMotionScaleValue">8.0</span><span class="unit">x</span></label>
+          <input id="viewMotionScaleSlider" type="range" min="1.0" max="20.0" step="0.5" value="8.0" />
+
+          <label for="viewTrailStepSlider">Trail Step <span id="viewTrailStepValue">0.018</span><span class="unit">m</span></label>
+          <input id="viewTrailStepSlider" type="range" min="0.004" max="0.080" step="0.002" value="0.018" />
+        </div>
+
+        <div class="slider-group">
+          <label>Device Layout Preview</label>
+          <p class="hint" style="margin: 0 0 6px;">Use this section to preview the product appearance and module mounting position.</p>
+
+          <label for="devicePresetSelect">Device Preset</label>
+          <select id="devicePresetSelect">
+            <option value="none">None (module only)</option>
+            <option value="glasses-temple">Glasses Temple</option>
+            <option value="headband-front">Headband Front</option>
+            <option value="ear-hook">Ear Hook</option>
+          </select>
+
+          <label for="moduleOffsetXSlider">Module Offset X <span id="moduleOffsetXValue">0.00</span><span class="unit">m</span></label>
+          <input id="moduleOffsetXSlider" type="range" min="-1.00" max="1.00" step="0.01" value="0.00" />
+
+          <label for="moduleOffsetYSlider">Module Offset Y <span id="moduleOffsetYValue">0.18</span><span class="unit">m</span></label>
+          <input id="moduleOffsetYSlider" type="range" min="-1.00" max="1.00" step="0.01" value="0.18" />
+
+          <label for="moduleOffsetZSlider">Module Offset Z <span id="moduleOffsetZValue">0.00</span><span class="unit">m</span></label>
+          <input id="moduleOffsetZSlider" type="range" min="-1.00" max="1.00" step="0.01" value="0.00" />
+
+          <label for="moduleYawSlider">Module Yaw <span id="moduleYawValue">0</span><span class="unit">deg</span></label>
+          <input id="moduleYawSlider" type="range" min="-180" max="180" step="1" value="0" />
+
+          <label for="modulePitchSlider">Module Pitch <span id="modulePitchValue">0</span><span class="unit">deg</span></label>
+          <input id="modulePitchSlider" type="range" min="-180" max="180" step="1" value="0" />
+
+          <label for="moduleRollSlider">Module Roll <span id="moduleRollValue">0</span><span class="unit">deg</span></label>
+          <input id="moduleRollSlider" type="range" min="-180" max="180" step="1" value="0" />
+
+          <label for="showTrailCheckbox">Show trajectory</label>
+          <select id="showTrailCheckbox">
+            <option value="on">On</option>
+            <option value="off">Off</option>
+          </select>
         </div>
 
         <div class="actions">
           <button id="sendToHostButton" type="button">Send Pose -&gt; C#</button>
           <button id="resetMappingButton" type="button" class="secondary">Reset Mapping</button>
           <button id="resetViewportButton" type="button" class="secondary">Reset Viewport</button>
+          <button id="resetLayoutButton" type="button" class="secondary">Reset Layout</button>
           <button id="resetPoseButton" type="button" class="secondary">Reset Pose</button>
           <button id="clearPageLogButton" type="button" class="secondary">Clear Page Log</button>
         </div>
