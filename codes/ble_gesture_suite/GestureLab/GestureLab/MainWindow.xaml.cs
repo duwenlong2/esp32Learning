@@ -27,13 +27,13 @@ namespace GestureLab
         private const ushort VirtualKeyControl = 0x11;
         private const ushort VirtualKeyMenu = 0x12;
         private const ushort VirtualKeyQ = 0x51;
-        private const double MoveStartGyroThreshold = 900.0;
-        private const double StillGyroThreshold = 450.0;
-        private const double HoldBreakGyroThreshold = 1400.0;
-        private const double PosePitchAbsMin = 24.0;
+        private const double MoveStartGyroThreshold = 700.0;
+        private const double StillGyroThreshold = 900.0;
+        private const double HoldBreakGyroThreshold = 3500.0;
+        private const double PosePitchAbsMin = 20.0;
         private const double PosePitchAbsMax = 88.0;
-        private const double PoseRollAbsMax = 86.0;
-        private const double HoldSeconds = 0.30;
+        private const double PoseRollAbsMax = 165.0;
+        private const double HoldSeconds = 0.22;
         private const double CooldownSeconds = 1.2;
         private const double PosePublishIntervalSeconds = 1.0 / 30.0;
         private const double DebugUiRefreshIntervalSeconds = 1.0 / 20.0;
@@ -64,19 +64,26 @@ namespace GestureLab
         private long _mouthHoldStartTicks;
         private long _mouthCooldownUntilTicks;
         private long _lastMouthDebugUiTicks;
-        private bool _mouthTriggerDialogOpen;
         private int _imuRawPacketCount;
         private int _imuParsedPacketCount;
         private bool _imuReadyLogged;
+        private bool _isImuCalibrationReady;
+        private bool _hasImuStream;
         private string _lastImuPayloadPreview = "<none>";
         private CancellationTokenSource? _imuValidationCts;
+        private bool _isSampleCollecting;
+        private string? _activeSampleFilePath;
+        private int _activeSampleTriggerCount;
+        private bool _isAppUiLogEnabled = true;
 
         public MainWindow()
         {
             InitializeComponent();
+            _isAppUiLogEnabled = AppLogToggle.IsOn;
             LogList.ItemsSource = _logItems;
             Browser.Loaded += Browser_Loaded;
             InitializeMouthDebugUi();
+            UpdateSampleCollectAvailability();
 
             // Caller-side required wiring summary:
             // 1) Register connection state/log/status/frame events before starting reconnect.
@@ -155,19 +162,188 @@ namespace GestureLab
 
         private async void AppWindow_Closing(Microsoft.UI.Windowing.AppWindow sender, Microsoft.UI.Windowing.AppWindowClosingEventArgs args)
         {
+            if (_isSampleCollecting)
+            {
+                // Ensure an unfinished sample is still closed and persisted on exit.
+                _recorder.LogMarker("SAMPLE_RESULT:UNFINISHED_EXIT");
+                _recorder.StopSession();
+            }
+
             await DisconnectBleAsync();
             await _bleClient.DisposeAsync();
             _recorder.Dispose();
         }
 
+        private async void CollectSampleButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (!_isSampleCollecting)
+            {
+                if (!_isImuCalibrationReady && !_hasImuStream)
+                {
+                    SampleCollectStatusText.Text = "等待 IMU ready";
+                    AppendLog("Sample capture blocked: IMU calibration is not ready yet.");
+                    UpdateSampleCollectAvailability();
+                    return;
+                }
+
+                if (!_isImuCalibrationReady && _hasImuStream)
+                {
+                    AppendLog("Sample capture started without IMU ready. Data is valid for collection, but quality may be lower.");
+                }
+
+                string sampleLabel = $"sample_{DateTime.Now:HHmmss}";
+                string path = _recorder.StartSession(sampleLabel);
+                _isSampleCollecting = true;
+                _activeSampleFilePath = path;
+                _activeSampleTriggerCount = 0;
+
+                CollectSampleButton.Content = "结束采集";
+                SampleCollectStatusText.Text = "采集中";
+                UpdateSampleCollectAvailability();
+                AppendLog($"Sample capture started: {path}");
+                return;
+            }
+
+            // End the sample immediately when the user clicks stop so later UI interaction
+            // does not continue recording extra IMU frames or gesture triggers.
+            _recorder.LogMarker("SAMPLE_STOP_REQUESTED");
+            string? sourcePath = _activeSampleFilePath;
+            _recorder.StopSession();
+            _isSampleCollecting = false;
+            _activeSampleFilePath = null;
+            CollectSampleButton.Content = "开始采集";
+            SampleCollectStatusText.Text = "等待标注";
+
+            FrameworkElement? root = Content as FrameworkElement;
+            string sampleResultTag = "UNKNOWN";
+            if (root?.XamlRoot is not null)
+            {
+                ContentDialog dialog = new()
+                {
+                    XamlRoot = root.XamlRoot,
+                    Title = "这次采集结果",
+                    Content = "请选择这次手势操作是正确还是错误。",
+                    PrimaryButtonText = "正确",
+                    SecondaryButtonText = "错误",
+                    CloseButtonText = "未标注",
+                    DefaultButton = ContentDialogButton.Primary,
+                };
+
+                ContentDialogResult result = await dialog.ShowAsync();
+                sampleResultTag = result switch
+                {
+                    ContentDialogResult.Primary => "CORRECT",
+                    ContentDialogResult.Secondary => "WRONG",
+                    _ => "UNLABELED",
+                };
+            }
+
+            string triggerResultTag = _activeSampleTriggerCount > 0 ? "TRIGGERED" : "MISSED";
+            string? renamedPath = TryRenameSampleFile(sourcePath, sampleResultTag);
+            renamedPath = TryRenameSampleFile(renamedPath, triggerResultTag);
+            SampleCollectStatusText.Text = $"已结束: {sampleResultTag}/{triggerResultTag}";
+            UpdateSampleCollectAvailability();
+            AppendLog($"Sample capture stopped: {renamedPath ?? sourcePath ?? "<unknown path>"}");
+            AppendLog($"Sample label selected: {sampleResultTag}");
+            AppendLog($"Sample trigger result: {triggerResultTag} (count={_activeSampleTriggerCount})");
+            _activeSampleTriggerCount = 0;
+        }
+
+        private void UpdateSampleCollectAvailability()
+        {
+            bool canStart = _bleClient.IsConnected && (_isImuCalibrationReady || _hasImuStream);
+            CollectSampleButton.IsEnabled = _isSampleCollecting || canStart;
+
+            if (_isSampleCollecting)
+            {
+                return;
+            }
+
+            if (!_bleClient.IsConnected)
+            {
+                SampleCollectStatusText.Text = "等待 BLE";
+                return;
+            }
+
+            if (!_isImuCalibrationReady)
+            {
+                if (_hasImuStream)
+                {
+                    SampleCollectStatusText.Text = "IMU流已到达(未ready)";
+                    return;
+                }
+
+                SampleCollectStatusText.Text = "等待 IMU ready";
+                return;
+            }
+
+            if (SampleCollectStatusText.Text == "未采集"
+                || SampleCollectStatusText.Text == "等待 BLE"
+                || SampleCollectStatusText.Text == "等待 IMU ready")
+            {
+                SampleCollectStatusText.Text = "可开始采集";
+            }
+
+        }
+
+        private static string? TryRenameSampleFile(string? sourcePath, string sampleResultTag)
+        {
+            if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+            {
+                return sourcePath;
+            }
+
+            try
+            {
+                string directory = Path.GetDirectoryName(sourcePath) ?? string.Empty;
+                string fileNameNoExt = Path.GetFileNameWithoutExtension(sourcePath);
+                string extension = Path.GetExtension(sourcePath);
+                string targetName = $"{fileNameNoExt}_{sampleResultTag}{extension}";
+                string targetPath = Path.Combine(directory, targetName);
+
+                if (!string.Equals(sourcePath, targetPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    File.Move(sourcePath, targetPath, overwrite: true);
+                    return targetPath;
+                }
+            }
+            catch
+            {
+                // Keep original file if rename fails; data has already been persisted.
+            }
+
+            return sourcePath;
+        }
+
         private void AppendLog(string line)
         {
+            if (!_isAppUiLogEnabled)
+            {
+                return;
+            }
+
             string timestamp = DateTime.Now.ToString("HH:mm:ss");
-            _logItems.Add($"[{timestamp}] {line}");
+            _logItems.Insert(0, $"[{timestamp}] {line}");
 
             while (_logItems.Count > MaxLogItems)
             {
-                _logItems.RemoveAt(0);
+                _logItems.RemoveAt(_logItems.Count - 1);
+            }
+        }
+
+        private void AppLogToggle_Toggled(object sender, RoutedEventArgs e)
+        {
+            bool enabled = AppLogToggle.IsOn;
+            if (!enabled)
+            {
+                AppendLog("APP界面日志已关闭。");
+            }
+
+            _isAppUiLogEnabled = enabled;
+
+            if (enabled)
+            {
+                AppendLog("APP界面日志已开启。");
             }
         }
 
@@ -229,6 +405,12 @@ namespace GestureLab
             string payload = result.RawPayload;
 
             _imuParsedPacketCount++;
+            if (!_hasImuStream)
+            {
+                _hasImuStream = true;
+                UpdateSampleCollectAvailability();
+            }
+
             if (!_imuReadyLogged)
             {
                 _imuReadyLogged = true;
@@ -238,6 +420,15 @@ namespace GestureLab
             }
 
             string note = calibrated.IsReady ? "imu-auto-cal-ready" : "imu-auto-cal-learning";
+            if (_isImuCalibrationReady != calibrated.IsReady)
+            {
+                _isImuCalibrationReady = calibrated.IsReady;
+                UpdateSampleCollectAvailability();
+                AppendLog(calibrated.IsReady
+                    ? "IMU calibration ready. Sample capture unlocked."
+                    : "IMU calibration returned to learning. Sample capture locked.");
+            }
+
             _recorder.LogImu(payload, rawSample.Ax, rawSample.Ay, rawSample.Az, rawSample.Gx, rawSample.Gy, rawSample.Gz, rawSample.Temp, roll, pitch, yaw, note);
 
             UpdateMotionPosition(calibrated);
@@ -521,6 +712,12 @@ namespace GestureLab
                 CultureInfo.InvariantCulture,
                 $"Gesture trigger: MOUTH_HOLD (roll={roll:F1}, pitch={pitch:F1})"));
 
+            if (_isSampleCollecting)
+            {
+                _activeSampleTriggerCount++;
+                AppendLog($"Sample trigger count updated: {_activeSampleTriggerCount}");
+            }
+
             _recorder.LogMarker("MOUTH_HOLD");
 
             if (Browser.CoreWebView2 is not null)
@@ -528,61 +725,10 @@ namespace GestureLab
                 Browser.CoreWebView2.PostWebMessageAsString(BuildGestureMessageJson("MOUTH_HOLD", roll, pitch));
             }
 
-            _ = ShowHotkeyToastAsync(roll, pitch, "动作触发");
-        }
-
-        private async Task ShowHotkeyToastAsync(double roll, double pitch, string source)
-        {
-            if (_mouthTriggerDialogOpen)
-            {
-                return;
-            }
-
-            FrameworkElement? root = Content as FrameworkElement;
-            if (root?.XamlRoot is null)
-            {
-                return;
-            }
-
-            _mouthTriggerDialogOpen = true;
-            try
-            {
-                SendSystemHotkey(VirtualKeyControl, VirtualKeyMenu, VirtualKeyQ);
-                ContentDialog dialog = new()
-                {
-                    XamlRoot = root.XamlRoot,
-                    Title = "热键已发送",
-                    Content = string.Create(
-                        CultureInfo.InvariantCulture,
-                        $"{source}: Ctrl+Alt+Q\nroll={roll:F1}, pitch={pitch:F1}"),
-                };
-
-                _ = Task.Run(async () =>
-                {
-                    await Task.Delay(1200);
-                    EnqueueUi(() =>
-                    {
-                        try
-                        {
-                            dialog.Hide();
-                        }
-                        catch
-                        {
-                            // Ignore if dialog is already closed.
-                        }
-                    });
-                });
-
-                await dialog.ShowAsync();
-            }
-            catch (Exception ex)
-            {
-                AppendLog($"Dialog warning: {ex.Message}");
-            }
-            finally
-            {
-                _mouthTriggerDialogOpen = false;
-            }
+            SendSystemHotkey(VirtualKeyControl, VirtualKeyMenu, VirtualKeyQ);
+            AppendLog(string.Create(
+                CultureInfo.InvariantCulture,
+                $"热键已发送: Ctrl+Alt+Q (source=动作触发, roll={roll:F1}, pitch={pitch:F1})"));
         }
 
         private void SendSystemHotkey(params ushort[] virtualKeys)
@@ -655,7 +801,10 @@ namespace GestureLab
 
                 case BleConnectionLifecycleState.Disconnected:
                 default:
+                    _imuValidationCts?.Cancel();
+                    _isImuCalibrationReady = false;
                     BleStatusText.Text = _bleClient.IsAutoReconnectActive ? "BLE: waiting for reconnect" : "BLE: disconnected";
+                    UpdateSampleCollectAvailability();
                     if (_bleClient.IsAutoReconnectActive)
                     {
                         AppendLog("BLE disconnected. Waiting for ESP32 advertisement to reconnect.");
@@ -672,7 +821,10 @@ namespace GestureLab
             _imuRawPacketCount = 0;
             _imuParsedPacketCount = 0;
             _imuReadyLogged = false;
+            _isImuCalibrationReady = false;
+            _hasImuStream = false;
             _lastImuPayloadPreview = "<none>";
+            UpdateSampleCollectAvailability();
 
             _ = ValidateImuStreamAsync(_imuValidationCts.Token);
         }

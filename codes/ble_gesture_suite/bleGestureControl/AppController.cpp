@@ -94,6 +94,15 @@ void AppController::begin()
   pinMode(AppConfig::kLedPin, OUTPUT);
   writeIndicatorLevel(0);
 
+  // 上电自检灯：不依赖 BLE 连接，便于区分“固件没跑起来”还是“仅 BLE 没连上”。
+  for (int i = 0; i < 2; ++i) {
+    writeIndicatorLevel(255);
+    delay(90);
+    writeIndicatorLevel(0);
+    delay(90);
+  }
+  Serial.println("LED self-test done");
+
   if (!imuSensor_.begin()) {
     Serial.println("IMU init failed, BLE will continue without motion stream");
   }
@@ -150,11 +159,12 @@ void AppController::onBleConnected()
   publishStatus();
 }
 
-// BLE 已断开：切到熄灯。
-// 这里没有再次 publishStatus()，是因为客户端已经断开，notify/read 都没有接收端了。
+// BLE 已断开：切回配对态快闪，表示设备正在等待重连。
+// publishStatus() 会更新特征值，虽然此时没有 notify 接收端，但新客户端连接后 read 能看到最新状态。
 void AppController::onBleDisconnected()
 {
-  setBleIndicatorMode(BleIndicatorMode::Disconnected);
+  setBleIndicatorMode(BleIndicatorMode::Pairing);
+  publishStatus();
 }
 
 // 切换状态模式并重置相关计时变量。

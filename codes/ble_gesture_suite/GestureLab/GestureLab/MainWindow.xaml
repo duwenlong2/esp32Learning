@@ -24,6 +24,13 @@
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <TextBlock Text="BLE" VerticalAlignment="Center" FontWeight="SemiBold" />
                 <TextBlock x:Name="BleStatusText" Text="BLE: idle" VerticalAlignment="Center" Margin="12,0,0,0" />
+
+                <TextBlock Text="采集" Margin="20,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <Button x:Name="CollectSampleButton" Content="开始采集" Click="CollectSampleButton_Click" />
+                <TextBlock x:Name="SampleCollectStatusText" Text="未采集" VerticalAlignment="Center" Margin="8,0,0,0" />
+
+                <TextBlock Text="APP日志" Margin="20,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold" />
+                <ToggleSwitch x:Name="AppLogToggle" IsOn="True" Toggled="AppLogToggle_Toggled" VerticalAlignment="Center" />
             </StackPanel>
         </StackPanel>
 
