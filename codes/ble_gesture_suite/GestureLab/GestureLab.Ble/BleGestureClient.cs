@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -41,14 +42,43 @@ public sealed class BleGestureClient : IAsyncDisposable
     private const ushort VirtualKeyControl = 0x11;
     private const ushort VirtualKeyMenu = 0x12;
     private const ushort VirtualKeyQ = 0x51;
-    private const double MoveStartGyroThreshold = 900.0;
-    private const double StillGyroThreshold = 450.0;
-    private const double HoldBreakGyroThreshold = 1400.0;
-    private const double PosePitchAbsMin = 24.0;
-    private const double PosePitchAbsMax = 88.0;
-    private const double PoseRollAbsMax = 86.0;
-    private const double HoldSeconds = 0.30;
-    private const double CooldownSeconds = 1.2;
+    private const double MoveStartGyroThreshold = 650.0;
+    private const double StillGyroThreshold = 700.0;
+    private const double HoldBreakGyroThreshold = 2300.0;
+    private const double StopPosePitchMin = 14.0;
+    private const double StopPosePitchMax = 42.0;
+    private const double StopPoseRollMin = -186.0;
+    private const double StopPoseRollMax = -120.0;
+    private const double StopPoseRollCenter = (StopPoseRollMin + StopPoseRollMax) / 2.0;
+    private const double TrajectoryPeakPitchMin = 16.0;
+    private const double TrajectoryPitchSpanMin = 2.0;
+    private const double TrajectoryAccelRmsMin = 30.0;
+    private const double TrajectoryAccelRmsMax = 9000.0;
+    private const double TrajectoryMinSeconds = 0.12;
+    private const double TrajectoryMaxSeconds = 4.80;
+    private const double StableWindowSeconds = 0.24;
+    private const int StableWindowMinFrames = 5;
+    private const double WritingPrecheckSeconds = 0.16;
+    private const int WritingPrecheckMinFrames = 3;
+    private const double WritingPosePitchMin = -20.0;
+    private const double WritingPosePitchMax = 20.0;
+    private const double WritingPoseRollMin = -40.0;
+    private const double WritingPoseRollMax = 40.0;
+    private const double StableBelowRatioMin = 0.58;
+    private const double StableBelowRatioStrong = 0.75;
+    private const double StableGyroP50Max = 900.0;
+    private const double StableGyroP90Max = 1600.0;
+    private const double StableRollSpanMax = 24.0;
+    private const double StableHighGyroSpikeThreshold = 1800.0;
+    private const int StableHighGyroSpikeMax = 6;
+    private const int TrajectoryScoreMin = 3;
+    private const double HoldSeconds = 0.18;
+    private const double MovingMinSeconds = 0.06;
+    private const double JitterWindowSeconds = 0.40;
+    private const double JitterGyroRmsMax = 1700.0;
+    private const int JitterRollFlipMax = 5;
+    private const double CooldownSeconds = 0.8;
+    private const double FeatureBufferRetentionSeconds = 4.0;
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, nuint dwExtraInfo);
@@ -63,10 +93,96 @@ public sealed class BleGestureClient : IAsyncDisposable
     private Task? _autoReconnectTask;
     private readonly Stopwatch _gestureClock = Stopwatch.StartNew();
     private GestureState _gestureState = GestureState.Idle;
+    private long _movingStartTicks;
     private long _holdStartTicks;
     private long _cooldownUntilTicks;
+    private double _movingPeakGyro;
     private int _hotkeySentCount;
     private GestureState _lastPublishedGestureState = GestureState.Idle;
+    private readonly Queue<MotionFrameFeature> _recentFeatures = new();
+
+    private readonly struct MotionFrameFeature
+    {
+        public MotionFrameFeature(long ticks, double roll, double pitch, double gyroMagnitude, double linearAccelMagnitude)
+        {
+            Ticks = ticks;
+            Roll = roll;
+            Pitch = pitch;
+            GyroMagnitude = gyroMagnitude;
+            LinearAccelMagnitude = linearAccelMagnitude;
+        }
+
+        public long Ticks { get; }
+        public double Roll { get; }
+        public double Pitch { get; }
+        public double GyroMagnitude { get; }
+        public double LinearAccelMagnitude { get; }
+    }
+
+    private readonly struct TrajectorySummary
+    {
+        public TrajectorySummary(
+            double durationSeconds,
+            double endPitch,
+            double endRoll,
+            double peakPitch,
+            double minPitch,
+            double accelRms,
+            double accelPeak)
+        {
+            DurationSeconds = durationSeconds;
+            EndPitch = endPitch;
+            EndRoll = endRoll;
+            PeakPitch = peakPitch;
+            MinPitch = minPitch;
+            AccelRms = accelRms;
+            AccelPeak = accelPeak;
+        }
+
+        public double DurationSeconds { get; }
+        public double EndPitch { get; }
+        public double EndRoll { get; }
+        public double PeakPitch { get; }
+        public double MinPitch { get; }
+        public double AccelRms { get; }
+        public double AccelPeak { get; }
+        public double PitchSpan => PeakPitch - MinPitch;
+    }
+
+    private readonly struct StableWindowSummary
+    {
+        public StableWindowSummary(
+            long startTicks,
+            long endTicks,
+            double endPitch,
+            double endRoll,
+            double belowRatio,
+            double gyroP50,
+            double gyroP90,
+            double rollSpan,
+            int highGyroSpikeCount)
+        {
+            StartTicks = startTicks;
+            EndTicks = endTicks;
+            EndPitch = endPitch;
+            EndRoll = endRoll;
+            BelowRatio = belowRatio;
+            GyroP50 = gyroP50;
+            GyroP90 = gyroP90;
+            RollSpan = rollSpan;
+            HighGyroSpikeCount = highGyroSpikeCount;
+        }
+
+        public long StartTicks { get; }
+        public long EndTicks { get; }
+        public double EndPitch { get; }
+        public double EndRoll { get; }
+        public double BelowRatio { get; }
+        public double GyroP50 { get; }
+        public double GyroP90 { get; }
+        public double RollSpan { get; }
+        public int HighGyroSpikeCount { get; }
+    }
 
     /// <summary>
     /// 当前是否已经建立 BLE 连接。
@@ -589,10 +705,14 @@ public sealed class BleGestureClient : IAsyncDisposable
         double correctedGy = frame.Raw.Gy - frame.Calibrated.GyroBiasY;
         double correctedGz = frame.Raw.Gz - frame.Calibrated.GyroBiasZ;
         double gyroMagnitude = Math.Sqrt((correctedGx * correctedGx) + (correctedGy * correctedGy) + (correctedGz * correctedGz));
-
-        bool inMouthPose = Math.Abs(frame.Pose.Pitch) >= PosePitchAbsMin
-            && Math.Abs(frame.Pose.Pitch) <= PosePitchAbsMax
-            && Math.Abs(frame.Pose.Roll) <= PoseRollAbsMax;
+        double linearAccelMagnitude = Math.Sqrt(
+            (frame.Calibrated.LinearX * frame.Calibrated.LinearX)
+            + (frame.Calibrated.LinearY * frame.Calibrated.LinearY)
+            + (frame.Calibrated.LinearZ * frame.Calibrated.LinearZ));
+        double canonicalRoll = CanonicalizeRoll(frame.Pose.Roll);
+        PushFeatureFrame(nowTicks, canonicalRoll, frame.Pose.Pitch, gyroMagnitude, linearAccelMagnitude);
+        AnalyzeRecentJitter(nowTicks, out int rollFlipCount, out double gyroRms);
+        bool inStopPose = IsInStopPose(frame.Pose.Pitch, canonicalRoll);
 
         string reason;
         switch (_gestureState)
@@ -600,8 +720,17 @@ public sealed class BleGestureClient : IAsyncDisposable
             case GestureState.Idle:
                 if (gyroMagnitude >= MoveStartGyroThreshold)
                 {
-                    _gestureState = GestureState.Moving;
-                    reason = "检测到抬手运动";
+                    if (IsInWritingStartPose(nowTicks, out string precheckReason))
+                    {
+                        _gestureState = GestureState.Moving;
+                        _movingStartTicks = nowTicks;
+                        _movingPeakGyro = gyroMagnitude;
+                        reason = "检测到抬手运动";
+                    }
+                    else
+                    {
+                        reason = precheckReason;
+                    }
                 }
                 else
                 {
@@ -610,34 +739,86 @@ public sealed class BleGestureClient : IAsyncDisposable
                 break;
 
             case GestureState.Moving:
-                if (inMouthPose && gyroMagnitude <= StillGyroThreshold)
+                _movingPeakGyro = Math.Max(_movingPeakGyro, gyroMagnitude);
+                double movingElapsedSeconds = (nowTicks - _movingStartTicks) / (double)Stopwatch.Frequency;
+                bool movingPrepared = movingElapsedSeconds >= MovingMinSeconds && _movingPeakGyro >= MoveStartGyroThreshold;
+                bool jitterAcceptable = rollFlipCount <= JitterRollFlipMax && gyroRms <= JitterGyroRmsMax;
+
+                if (movingPrepared && TryFindStableWindowSummary(nowTicks, out StableWindowSummary stableWindow, out string stableReason))
                 {
-                    _gestureState = GestureState.Holding;
-                    _holdStartTicks = nowTicks;
-                    reason = "进入 Holding";
+                    if (!jitterAcceptable)
+                    {
+                        _gestureState = GestureState.Idle;
+                        _movingPeakGyro = 0;
+                        reason = string.Create(
+                            CultureInfo.InvariantCulture,
+                            $"停止后抖动过大: flips={rollFlipCount}, rms={gyroRms:F0}");
+                        break;
+                    }
+
+                    if (TryBuildTrajectorySummary(stableWindow, out TrajectorySummary summary, out string summaryReason))
+                    {
+                        _gestureState = GestureState.Holding;
+                        _holdStartTicks = nowTicks;
+                        reason = string.Create(
+                            CultureInfo.InvariantCulture,
+                            $"停止轨迹匹配: end=({summary.EndPitch:F1},{summary.EndRoll:F1}) p90={stableWindow.GyroP90:F0}");
+                    }
+                    else
+                    {
+                        _gestureState = GestureState.Idle;
+                        _movingPeakGyro = 0;
+                        reason = summaryReason;
+                    }
                 }
-                else if (gyroMagnitude <= StillGyroThreshold && !inMouthPose)
+                else if (movingElapsedSeconds >= (TrajectoryMaxSeconds + 0.8) && gyroMagnitude <= StableGyroP50Max)
                 {
                     _gestureState = GestureState.Idle;
-                    reason = "运动结束但未进入目标姿态";
+                    _movingPeakGyro = 0;
+                    reason = "运动周期超时，重置为 Idle";
+                }
+                else if (!movingPrepared)
+                {
+                    reason = string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"过渡不足: t={movingElapsedSeconds:F2}s, peak={_movingPeakGyro:F0}");
                 }
                 else
                 {
-                    reason = "运动中";
+                    TryFindStableWindowSummary(nowTicks, out _, out string stableReasonPreview);
+                    reason = stableReasonPreview;
                 }
                 break;
 
             case GestureState.Holding:
-                if (!inMouthPose)
+                if (!inStopPose)
                 {
                     _gestureState = gyroMagnitude >= MoveStartGyroThreshold ? GestureState.Moving : GestureState.Idle;
-                    reason = "Holding 退出：姿态离开目标窗口";
+                    if (_gestureState == GestureState.Moving)
+                    {
+                        _movingStartTicks = nowTicks;
+                        _movingPeakGyro = gyroMagnitude;
+                    }
+                    reason = "Holding 退出：姿态离开停止窗口";
+                    break;
+                }
+
+                if (rollFlipCount > JitterRollFlipMax || gyroRms > JitterGyroRmsMax)
+                {
+                    _gestureState = GestureState.Moving;
+                    _movingStartTicks = nowTicks;
+                    _movingPeakGyro = gyroMagnitude;
+                    reason = string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"Holding 中断：jitter flips={rollFlipCount}, rms={gyroRms:F0}");
                     break;
                 }
 
                 if (gyroMagnitude >= HoldBreakGyroThreshold)
                 {
                     _gestureState = GestureState.Moving;
+                    _movingStartTicks = nowTicks;
+                    _movingPeakGyro = gyroMagnitude;
                     reason = "Holding 中断：角速度过大";
                     break;
                 }
@@ -649,6 +830,7 @@ public sealed class BleGestureClient : IAsyncDisposable
                     _hotkeySentCount++;
                     _cooldownUntilTicks = nowTicks + (long)(CooldownSeconds * Stopwatch.Frequency);
                     _gestureState = GestureState.Cooldown;
+                    _movingPeakGyro = 0;
 
                     DateTime sentTime = DateTime.Now;
                     var triggerResult = new GestureTriggerResult(
@@ -680,6 +862,7 @@ public sealed class BleGestureClient : IAsyncDisposable
                 if (nowTicks >= _cooldownUntilTicks && gyroMagnitude <= StillGyroThreshold)
                 {
                     _gestureState = GestureState.Idle;
+                    _movingPeakGyro = 0;
                     reason = "Cooldown 结束";
                 }
                 else
@@ -697,6 +880,293 @@ public sealed class BleGestureClient : IAsyncDisposable
         {
             _lastPublishedGestureState = _gestureState;
             GestureStateChanged?.Invoke(_gestureState.ToString(), reason);
+        }
+    }
+
+    private static bool IsInStopPose(double pitch, double roll)
+    {
+        double canonicalRoll = CanonicalizeRoll(roll);
+        return pitch >= StopPosePitchMin
+            && pitch <= StopPosePitchMax
+            && canonicalRoll >= StopPoseRollMin
+            && canonicalRoll <= StopPoseRollMax;
+    }
+
+    private static double CanonicalizeRoll(double roll)
+    {
+        return NormalizeAngleToReference(roll, StopPoseRollCenter);
+    }
+
+    private static double NormalizeAngleToReference(double angle, double reference)
+    {
+        double delta = angle - reference;
+        while (delta > 180.0)
+        {
+            delta -= 360.0;
+        }
+
+        while (delta < -180.0)
+        {
+            delta += 360.0;
+        }
+
+        return reference + delta;
+    }
+
+    private bool IsInWritingStartPose(long nowTicks, out string reason)
+    {
+        reason = "起笔预检未通过";
+        long windowTicks = (long)(WritingPrecheckSeconds * Stopwatch.Frequency);
+        long minTicks = nowTicks - windowTicks;
+
+        List<MotionFrameFeature> preWindow = new();
+        foreach (MotionFrameFeature frame in _recentFeatures)
+        {
+            if (frame.Ticks >= minTicks && frame.Ticks < nowTicks)
+            {
+                preWindow.Add(frame);
+            }
+        }
+
+        if (preWindow.Count < WritingPrecheckMinFrames)
+        {
+            reason = "起笔预检采样不足";
+            return false;
+        }
+
+        double avgPitch = preWindow.Average(x => x.Pitch);
+        double avgRoll = preWindow.Average(x => x.Roll);
+        if (avgPitch < WritingPosePitchMin || avgPitch > WritingPosePitchMax
+            || avgRoll < WritingPoseRollMin || avgRoll > WritingPoseRollMax)
+        {
+            reason = string.Create(
+                CultureInfo.InvariantCulture,
+                $"起笔姿态非书写态: pre=({avgPitch:F1},{avgRoll:F1})");
+            return false;
+        }
+
+        reason = "起笔预检通过";
+        return true;
+    }
+
+    private bool TryFindStableWindowSummary(long nowTicks, out StableWindowSummary summary, out string reason)
+    {
+        summary = default;
+        reason = "等待稳定窗口";
+
+        long windowTicks = (long)(StableWindowSeconds * Stopwatch.Frequency);
+        long minTicks = nowTicks - windowTicks;
+
+        List<MotionFrameFeature> window = new();
+        foreach (MotionFrameFeature frame in _recentFeatures)
+        {
+            if (frame.Ticks >= minTicks && frame.Ticks <= nowTicks && frame.Ticks >= _movingStartTicks)
+            {
+                window.Add(frame);
+            }
+        }
+
+        if (window.Count < StableWindowMinFrames)
+        {
+            reason = "稳定窗口采样不足";
+            return false;
+        }
+
+        List<double> gyros = window.Select(x => x.GyroMagnitude).OrderBy(x => x).ToList();
+        double gyroP50 = PercentileSorted(gyros, 0.5);
+        double gyroP90 = PercentileSorted(gyros, 0.9);
+        double belowRatio = window.Count(x => x.GyroMagnitude <= StableGyroP50Max) / (double)window.Count;
+        double rollSpan = window.Max(x => x.Roll) - window.Min(x => x.Roll);
+        int highGyroSpikeCount = window.Count(x => x.GyroMagnitude >= StableHighGyroSpikeThreshold);
+        double endPitch = window.Average(x => x.Pitch);
+        double endRoll = window.Average(x => x.Roll);
+
+        summary = new StableWindowSummary(
+            startTicks: window[0].Ticks,
+            endTicks: window[^1].Ticks,
+            endPitch: endPitch,
+            endRoll: endRoll,
+            belowRatio: belowRatio,
+            gyroP50: gyroP50,
+            gyroP90: gyroP90,
+            rollSpan: rollSpan,
+            highGyroSpikeCount: highGyroSpikeCount);
+
+        if (belowRatio < StableBelowRatioMin
+            || gyroP50 > StableGyroP50Max
+            || gyroP90 > StableGyroP90Max
+            || rollSpan > StableRollSpanMax
+            || highGyroSpikeCount > StableHighGyroSpikeMax)
+        {
+            reason = string.Create(
+                CultureInfo.InvariantCulture,
+                $"稳定不足: ratio={belowRatio:F2}, p50={gyroP50:F0}, p90={gyroP90:F0}, rSpan={rollSpan:F1}, spikes={highGyroSpikeCount}");
+            return false;
+        }
+
+        reason = "末端稳定窗口已满足";
+        return true;
+    }
+
+    private bool TryBuildTrajectorySummary(StableWindowSummary stableWindow, out TrajectorySummary summary, out string reason)
+    {
+        summary = default;
+        reason = "轨迹不足";
+
+        if (_movingStartTicks <= 0)
+        {
+            reason = "无有效起始轨迹";
+            return false;
+        }
+
+        List<MotionFrameFeature> segment = new();
+        foreach (MotionFrameFeature frame in _recentFeatures)
+        {
+            if (frame.Ticks >= _movingStartTicks && frame.Ticks <= stableWindow.EndTicks)
+            {
+                segment.Add(frame);
+            }
+        }
+
+        if (segment.Count < 6)
+        {
+            reason = "轨迹采样点不足";
+            return false;
+        }
+
+        double durationSeconds = (stableWindow.EndTicks - _movingStartTicks) / (double)Stopwatch.Frequency;
+        if (durationSeconds < TrajectoryMinSeconds || durationSeconds > TrajectoryMaxSeconds)
+        {
+            reason = string.Create(
+                CultureInfo.InvariantCulture,
+                $"轨迹时长异常: {durationSeconds:F2}s");
+            return false;
+        }
+
+        double endPitch = stableWindow.EndPitch;
+        double endRoll = stableWindow.EndRoll;
+        double peakPitch = segment.Max(x => x.Pitch);
+        double minPitch = segment.Min(x => x.Pitch);
+        double accelPeak = segment.Max(x => x.LinearAccelMagnitude);
+        double accelRms = Math.Sqrt(segment.Average(x => x.LinearAccelMagnitude * x.LinearAccelMagnitude));
+        summary = new TrajectorySummary(durationSeconds, endPitch, endRoll, peakPitch, minPitch, accelRms, accelPeak);
+
+        if (summary.AccelRms < TrajectoryAccelRmsMin || summary.AccelRms > TrajectoryAccelRmsMax)
+        {
+            reason = string.Create(
+                CultureInfo.InvariantCulture,
+                $"加速度轨迹不匹配: rms={summary.AccelRms:F0}, peak={summary.AccelPeak:F0}");
+            return false;
+        }
+
+        int score = 0;
+        if (IsInStopPose(endPitch, endRoll))
+        {
+            score++;
+        }
+
+        if (summary.DurationSeconds >= TrajectoryMinSeconds && summary.DurationSeconds <= TrajectoryMaxSeconds)
+        {
+            score++;
+        }
+
+        if (summary.PeakPitch >= TrajectoryPeakPitchMin)
+        {
+            score++;
+        }
+
+        if (summary.PitchSpan >= TrajectoryPitchSpanMin)
+        {
+            score++;
+        }
+
+        if (stableWindow.BelowRatio >= StableBelowRatioStrong)
+        {
+            score++;
+        }
+
+        if (stableWindow.GyroP90 <= 1100)
+        {
+            score++;
+        }
+
+        if (stableWindow.HighGyroSpikeCount <= 2)
+        {
+            score++;
+        }
+
+        if (score < TrajectoryScoreMin)
+        {
+            reason = string.Create(
+                CultureInfo.InvariantCulture,
+                $"轨迹评分不足: score={score}/{TrajectoryScoreMin}, end=({endPitch:F1},{endRoll:F1}), peak={summary.PeakPitch:F1}, span={summary.PitchSpan:F1}, ratio={stableWindow.BelowRatio:F2}, spikes={stableWindow.HighGyroSpikeCount}");
+            return false;
+        }
+
+        return true;
+    }
+
+    private static double PercentileSorted(IReadOnlyList<double> sortedValues, double percentile)
+    {
+        if (sortedValues.Count == 0)
+        {
+            return 0;
+        }
+
+        int index = (int)Math.Floor((sortedValues.Count - 1) * percentile);
+        index = Math.Clamp(index, 0, sortedValues.Count - 1);
+        return sortedValues[index];
+    }
+
+    private void PushFeatureFrame(long nowTicks, double roll, double pitch, double gyroMagnitude, double linearAccelMagnitude)
+    {
+        _recentFeatures.Enqueue(new MotionFrameFeature(nowTicks, roll, pitch, gyroMagnitude, linearAccelMagnitude));
+
+        long retentionTicks = (long)(FeatureBufferRetentionSeconds * Stopwatch.Frequency);
+        while (_recentFeatures.Count > 0 && (nowTicks - _recentFeatures.Peek().Ticks) > retentionTicks)
+        {
+            _recentFeatures.Dequeue();
+        }
+    }
+
+    private void AnalyzeRecentJitter(long nowTicks, out int rollFlipCount, out double gyroRms)
+    {
+        rollFlipCount = 0;
+        gyroRms = 0;
+
+        long windowTicks = (long)(JitterWindowSeconds * Stopwatch.Frequency);
+        long minTicks = nowTicks - windowTicks;
+        int prevSign = 0;
+        int count = 0;
+        double gyroSquaredSum = 0;
+
+        foreach (MotionFrameFeature frame in _recentFeatures)
+        {
+            if (frame.Ticks < minTicks)
+            {
+                continue;
+            }
+
+            count++;
+            gyroSquaredSum += frame.GyroMagnitude * frame.GyroMagnitude;
+
+            int sign = Math.Abs(frame.Roll) < 12.0 ? 0 : Math.Sign(frame.Roll);
+            if (sign == 0)
+            {
+                continue;
+            }
+
+            if (prevSign != 0 && prevSign != sign)
+            {
+                rollFlipCount++;
+            }
+
+            prevSign = sign;
+        }
+
+        if (count > 0)
+        {
+            gyroRms = Math.Sqrt(gyroSquaredSum / count);
         }
     }
 

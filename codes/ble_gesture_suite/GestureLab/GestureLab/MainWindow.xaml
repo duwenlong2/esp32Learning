@@ -32,12 +32,26 @@
                 <TextBlock Text="APP日志" Margin="20,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold" />
                 <ToggleSwitch x:Name="AppLogToggle" IsOn="True" Toggled="AppLogToggle_Toggled" VerticalAlignment="Center" />
             </StackPanel>
+
+            <Border BorderBrush="#404040" BorderThickness="1" CornerRadius="6" Padding="8,6" Background="#12FFFFFF">
+                <StackPanel Spacing="4">
+                    <TextBlock Text="采样节奏提示" FontWeight="SemiBold" />
+                    <TextBlock
+                        Text="1) 快速抬手接近嘴边  2) 停稳至少 0.20s  3) 保持约 0.30s 再回位"
+                        TextWrapping="Wrap" />
+                    <TextBlock
+                        x:Name="GestureRhythmHintText"
+                        Text="实时提示: 等待动作开始"
+                        FontWeight="SemiBold"
+                        TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
         </StackPanel>
 
         <Grid Grid.Row="2" ColumnDefinitions="3*,2*" ColumnSpacing="12">
             <controls:WebView2 x:Name="Browser" />
 
-            <Grid Grid.Column="1" RowDefinitions="Auto,*" RowSpacing="10">
+            <Grid Grid.Column="1" RowDefinitions="Auto,Auto,*" RowSpacing="10">
                 <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="8" Padding="10">
                     <StackPanel Spacing="8">
                         <TextBlock Text="Mouth 判定调试" FontWeight="SemiBold" FontSize="14" />
@@ -47,41 +61,41 @@
                             <TextBlock x:Name="MouthStateText" Grid.Column="1" Text="Idle" />
                         </Grid>
 
-                        <TextBlock x:Name="MouthReasonText" Text="等待数据..." TextWrapping="Wrap" />
+                        <TextBlock x:Name="MouthReasonText" Text="等待数据..." TextWrapping="Wrap" MaxLines="3" />
 
                         <StackPanel Spacing="4">
                             <TextBlock Text="Pitch" FontWeight="SemiBold" />
                             <ProgressBar x:Name="PitchProgressBar" Minimum="-90" Maximum="90" Value="0" />
-                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                                <TextBlock x:Name="PitchRangeText" Text="范围: |pitch| in [24, 88]" />
-                                <TextBlock x:Name="PitchValueText" Text="0.0°" />
+                            <Grid RowDefinitions="Auto,Auto" RowSpacing="2">
+                                <TextBlock x:Name="PitchRangeText" Text="范围: |pitch| in [24, 88]" TextWrapping="Wrap" />
+                                <TextBlock x:Name="PitchValueText" Grid.Row="1" Text="0.0°" HorizontalAlignment="Right" />
                             </Grid>
                         </StackPanel>
 
                         <StackPanel Spacing="4">
                             <TextBlock Text="Roll" FontWeight="SemiBold" />
                             <ProgressBar x:Name="RollProgressBar" Minimum="-90" Maximum="90" Value="0" />
-                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                                <TextBlock x:Name="RollRangeText" Text="范围: |roll| &lt;= 86" />
-                                <TextBlock x:Name="RollValueText" Text="0.0°" />
+                            <Grid RowDefinitions="Auto,Auto" RowSpacing="2">
+                                <TextBlock x:Name="RollRangeText" Text="范围: |roll| &lt;= 86" TextWrapping="Wrap" />
+                                <TextBlock x:Name="RollValueText" Grid.Row="1" Text="0.0°" HorizontalAlignment="Right" />
                             </Grid>
                         </StackPanel>
 
                         <StackPanel Spacing="4">
                             <TextBlock Text="Gyro Magnitude" FontWeight="SemiBold" />
                             <ProgressBar x:Name="GyroProgressBar" Minimum="0" Maximum="1800" Value="0" />
-                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                                <TextBlock x:Name="GyroRangeText" Text="阈值: start>=900, still&lt;=450, break&lt;1400" />
-                                <TextBlock x:Name="GyroValueText" Text="0" />
+                            <Grid RowDefinitions="Auto,Auto" RowSpacing="2">
+                                <TextBlock x:Name="GyroRangeText" Text="阈值: start>=900, still&lt;=450, break&lt;1400" TextWrapping="Wrap" />
+                                <TextBlock x:Name="GyroValueText" Grid.Row="1" Text="0" HorizontalAlignment="Right" />
                             </Grid>
                         </StackPanel>
 
                         <StackPanel Spacing="4">
                             <TextBlock Text="Holding 进度" FontWeight="SemiBold" />
                             <ProgressBar x:Name="HoldProgressBar" Minimum="0" Maximum="1" Value="0" />
-                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                                <TextBlock x:Name="HoldTargetText" Text="目标: 0.30s" />
-                                <TextBlock x:Name="HoldProgressText" Text="0%" />
+                            <Grid RowDefinitions="Auto,Auto" RowSpacing="2">
+                                <TextBlock x:Name="HoldTargetText" Text="目标: 0.30s" TextWrapping="Wrap" />
+                                <TextBlock x:Name="HoldProgressText" Grid.Row="1" Text="0%" HorizontalAlignment="Right" />
                             </Grid>
                         </StackPanel>
 
@@ -93,6 +107,19 @@
                 </Border>
 
                 <Border Grid.Row="1" BorderBrush="Gray" BorderThickness="1" CornerRadius="8" Padding="8">
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="热键成功触发日志(最新在上)" FontWeight="SemiBold" />
+                        <ListView
+                            x:Name="HotkeySuccessList"
+                            IsItemClickEnabled="False"
+                            SelectionMode="None"
+                            ScrollViewer.VerticalScrollBarVisibility="Auto"
+                            ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                            Height="110" />
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="2" BorderBrush="Gray" BorderThickness="1" CornerRadius="8" Padding="8">
                     <ListView
                         x:Name="LogList"
                         IsItemClickEnabled="False"
